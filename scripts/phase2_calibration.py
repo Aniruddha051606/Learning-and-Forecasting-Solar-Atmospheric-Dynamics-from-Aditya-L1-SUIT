@@ -78,38 +78,31 @@ def corr(a, b, m):
     return float(np.corrcoef(a[m], b[m])[0, 1])
 
 
-def masked_median(mm, sel, rows=128):
-    """Per-pixel median over the frames in `sel` (bool per frame, or a per-pixel (n, H, W) bool array
-    is handled by the caller)."""
-    out = np.full(SHAPE, np.nan, np.float32)
-    idx = np.nonzero(sel)[0]
-    import warnings
+def block_pass(rel_mm, sm_mm, groups, abs_groups, off, rows=32):
+    """One pass over row blocks: every group median (relative residual), absolute-residual medians for
+    the held-out halves, the per-pixel bright/dark medians, and the median smoothed level. Each block is
+    read once; memory stays at a few hundred MB (the first version took the median of the whole cache
+    in one call and ran out of memory)."""
+    P = {k: np.full(SHAPE, np.nan, np.float32) for k in groups}
+    Pabs = {k: np.full(SHAPE, np.nan, np.float32) for k in abs_groups}
+    bd = {k: np.full(SHAPE, np.nan, np.float32) for k in ("rel_b", "rel_d", "abs_b", "abs_d", "sm_b", "sm_d")}
+    level = np.full(SHAPE, np.nan, np.float32)
     for y0 in range(0, SHAPE[0], rows):
-        blk = mm[idx, y0:y0 + rows, :].astype(np.float32)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            out[y0:y0 + rows] = np.nanmedian(blk, 0)
-    return out
-
-
-def bright_dark(rel_mm, sm_mm, n, rows=64):
-    """Per pixel: median relative and absolute residual over the frames where the pixel's smoothed
-    brightness is above / below its own median."""
-    res = {k: np.full(SHAPE, np.nan, np.float32) for k in ("rel_b", "rel_d", "abs_b", "abs_d", "sm_b", "sm_d")}
-    import warnings
-    for y0 in range(0, SHAPE[0], rows):
-        r = rel_mm[:, y0:y0 + rows, :].astype(np.float32)
-        s = sm_mm[:, y0:y0 + rows, :].astype(np.float32)
+        sl = slice(y0, y0 + rows)
+        r = np.asarray(rel_mm[:, sl, :], dtype=np.float32)
+        s = np.asarray(sm_mm[:, sl, :], dtype=np.float32)
         a = r * s
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            med = np.nanmedian(s, 0)
-            hi = s > med
-            lo = s <= med
-            for key, v in (("rel", r), ("abs", a), ("sm", s)):
-                res[f"{key}_b"][y0:y0 + rows] = np.nanmedian(np.where(hi, v, np.nan), 0)
-                res[f"{key}_d"][y0:y0 + rows] = np.nanmedian(np.where(lo, v, np.nan), 0)
-    return res
+        for k, m in groups.items():
+            P[k][sl] = flat.nanmedian0(r[m])
+        for k, m in abs_groups.items():
+            Pabs[k][sl] = flat.nanmedian0(a[m])
+        level[sl] = flat.nanmedian0(s[off])
+        med = flat.nanmedian0(s)
+        hi, lo = s > med, s <= med
+        for key, v in (("rel", r), ("abs", a), ("sm", s)):
+            bd[f"{key}_b"][sl] = flat.nanmedian0(np.where(hi, v, np.nan))
+            bd[f"{key}_d"][sl] = flat.nanmedian0(np.where(lo, v, np.nan))
+    return P, Pabs, bd, level
 
 
 def rotation_test(pattern, mode, n_pairs=120):
@@ -151,46 +144,58 @@ def rotation_test(pattern, mode, n_pairs=120):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=320)
+    ap.add_argument("--reuse-cache", action="store_true",
+                    help="reuse the residual cache if it was made from exactly this frame selection")
     a = ap.parse_args()
     t0 = time.time()
     sel = select_frames(a.frames)
     n = len(sel)
-    rel_path, sm_path = CACHE / "nb03_rel.f16", CACHE / "nb03_sm.f16"
-    for p in (rel_path, sm_path):
-        np.memmap(p, dtype=np.float16, mode="w+", shape=(n,) + SHAPE).flush()
-    jobs = [(k, r.path, _fit(r), r.clip_lo, r.clip_hi, rel_path, sm_path, n) for k, r in sel.iterrows()]
-    with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
-        list(ex.map(_job, jobs, chunksize=2))
+    rel_path, sm_path, sel_path = CACHE / "nb03_rel.f16", CACHE / "nb03_sm.f16", CACHE / "nb03_selection.json"
+    nbytes = n * SHAPE[0] * SHAPE[1] * 2
+    files = sel.file.tolist()
+    reuse = (a.reuse_cache and rel_path.exists() and sm_path.exists() and rel_path.stat().st_size == nbytes
+             and (not sel_path.exists() or json.loads(sel_path.read_text()) == files))
+    if not reuse:
+        for p in (rel_path, sm_path):
+            np.memmap(p, dtype=np.float16, mode="w+", shape=(n,) + SHAPE).flush()
+        jobs = [(k, r.path, _fit(r), r.clip_lo, r.clip_hi, rel_path, sm_path, n) for k, r in sel.iterrows()]
+        with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
+            list(ex.map(_job, jobs, chunksize=2))
+    sel_path.write_text(json.dumps(files))
     rel = np.memmap(rel_path, dtype=np.float16, mode="r", shape=(n,) + SHAPE)
     sm = np.memmap(sm_path, dtype=np.float16, mode="r", shape=(n,) + SHAPE)
-    print(f"residuals of {n} frames in {time.time() - t0:.0f} s", flush=True)
+    state = "reused" if reuse else "computed"
+    print(f"residuals of {n} frames {state} ({time.time() - t0:.0f} s)", flush=True)
 
     off = (sel.pointing_mode == "offset").values
     k = np.cumsum(off) - 1
     halves = {"A": off & (k % 2 == 0), "B": off & (k % 2 == 1)}
     days = sel.t.dt.floor("D")
     last_day = days[off].max()
-    groups = {"early_days": off & (days < last_day).values, "last_day": off & (days == last_day).values,
+    groups = {**halves, "all": off, "early_days": off & (days < last_day).values,
+              "last_day": off & (days == last_day).values,
               "before_state_change": off & (sel.t < STATE_CHANGE).values,
-              "after_state_change": off & (sel.t >= STATE_CHANGE).values,
-              "centred_mode": ~off}
-    P = {name: masked_median(rel, m) for name, m in {**halves, **groups, "all": off}.items() if m.any()}
-    cnt = np.isfinite(P["all"])
-    disk = cnt & (np.abs(P["all"]) < 0.5)
+              "after_state_change": off & (sel.t >= STATE_CHANGE).values, "centred_mode": ~off}
+    groups = {g: m for g, m in groups.items() if m.any()}
+    P, Pabs, bd, level_map = block_pass(rel, sm, groups, halves, off)
+    print(f"block pass done ({time.time() - t0:.0f} s)", flush=True)
+    disk = np.isfinite(P["all"]) & (np.abs(P["all"]) < 0.5)
 
-    # Q2: multiplicative vs additive, from bright/dark frames at each pixel
-    bd = bright_dark(rel, sm, n)  # all frames: a pixel's brightness varies most across pointing modes
-    m2 = disk & np.isfinite(bd["rel_b"]) & np.isfinite(bd["rel_d"]) & (np.abs(P["all"]) > 2 * np.nanstd(P["all"][disk]))
+    # Q2: multiplicative vs additive, from the frames where each pixel is bright vs dark
+    strong = np.abs(P["all"]) > 2 * np.nanstd(P["all"][disk])
+    m2 = disk & np.isfinite(bd["rel_b"]) & np.isfinite(bd["rel_d"]) & strong
     ratio_sm = np.nanmedian((bd["sm_b"] / bd["sm_d"])[m2])
     slope_abs = np.polyfit(bd["abs_d"][m2], bd["abs_b"][m2], 1)[0]
     slope_rel = np.polyfit(bd["rel_d"][m2], bd["rel_b"][m2], 1)[0]
     mode = "multiplicative" if abs(slope_rel - 1) < abs(slope_abs - 1) else "additive"
-
-    pattern = P["all"] if mode == "multiplicative" else P["all"] * np.nanmedian(sm, 0)
+    pattern = P["all"] if mode == "multiplicative" else P["all"] * level_map
     np.save(CAL / f"nb03_pattern_{mode}.npy", pattern.astype(np.float32))
 
-    # Q3: held-out check. Correct half B with the pattern from half A, re-estimate: residual pattern rms.
-    resid = P["B"] - P["A"] if mode == "multiplicative" else None
+    # Q3: held-out. What is left in half B after removing half A's pattern, in each representation
+    # (absolute residuals divided by the level so both are in the same units).
+    lev = np.nanmedian(level_map[disk])
+    resid_rel = float(np.nanstd((P["B"] - P["A"])[disk]))
+    resid_abs = float(np.nanstd(((Pabs["B"] - Pabs["A"]) / level_map)[disk]))
     rot = rotation_test(P["all"] if mode == "multiplicative" else pattern, mode)
     rsum = {}
     for tag in ("uncorrected", "corrected"):
@@ -200,29 +205,27 @@ def main():
                      "corr_dx_expected": float(np.corrcoef(d.dx, d.expected_dx)[0, 1])}
     rsum["predicted_rotation_dx_median"] = float(rot.pred_rot_dx.median())
 
-    level = float(np.nanmedian(sm[:, 700:900, 1200:1400]))
+    def c(a_, b_):
+        if a_ not in P or b_ not in P:
+            return None
+        return corr(P[a_], P[b_], disk & np.isfinite(P[a_]) & np.isfinite(P[b_]))
+
     summary = {
-        "frames": n, "span": [str(sel.t.min()), str(sel.t.max())],
+        "frames": n, "offset_frames": int(off.sum()), "centred_frames": int((~off).sum()),
+        "span": [str(sel.t.min()), str(sel.t.max())],
         "pattern_rms_relative": float(np.nanstd(P["all"][disk])),
-        "pattern_rms_counts_at_disk_level": float(np.nanstd(P["all"][disk]) * level),
-        "q1_stability_r": {
-            "split_half_A_vs_B": corr(P["A"], P["B"], disk & np.isfinite(P["A"]) & np.isfinite(P["B"])),
-            "early_days_vs_last_day": corr(P["early_days"], P["last_day"],
-                                           disk & np.isfinite(P["early_days"]) & np.isfinite(P["last_day"])),
-            "before_vs_after_state_change": corr(P["before_state_change"], P["after_state_change"],
-                                                 disk & np.isfinite(P["before_state_change"])
-                                                 & np.isfinite(P["after_state_change"])),
-            "offset_vs_centred_pointing": corr(P["all"], P["centred_mode"],
-                                               disk & np.isfinite(P["centred_mode"])) if "centred_mode" in P else None,
-            "centred_frames": int((~off).sum()),
-        },
+        "pattern_rms_counts_at_disk_level": float(np.nanstd(P["all"][disk]) * lev),
+        "q1_stability_r": {"split_half_A_vs_B": c("A", "B"), "early_days_vs_last_day": c("early_days", "last_day"),
+                           "before_vs_after_state_change": c("before_state_change", "after_state_change"),
+                           "offset_vs_centred_pointing": c("all", "centred_mode")},
         "q2_mode": {"brightness_ratio_bright_over_dark": float(ratio_sm),
                     "slope_relative_pattern_bright_vs_dark": float(slope_rel),
                     "slope_absolute_pattern_bright_vs_dark": float(slope_abs),
                     "pixels_used": int(m2.sum()), "adopted": mode,
                     "rule": "the representation whose bright-vs-dark slope is closer to 1 is the invariant one"},
-        "q3_heldout": {"residual_after_correcting_B_with_A_rms": float(np.nanstd(resid[disk])) if resid is not None else None,
-                       "pattern_rms_before": float(np.nanstd(P["B"][disk])),
+        "q3_heldout": {"half_pattern_rms_relative": float(np.nanstd(P["B"][disk])),
+                       "residual_B_minus_A_relative_repr": resid_rel,
+                       "residual_B_minus_A_absolute_repr_over_level": resid_abs,
                        "rotation_test": rsum},
         "seconds": round(time.time() - t0, 1), **CFG["_meta"],
     }
@@ -232,11 +235,13 @@ def main():
     fig, ax = plt.subplots(2, 3, figsize=(18, 11))
     v = 3 * np.nanstd(P["all"][disk])
     ax[0, 0].imshow(P["all"], origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
-    ax[0, 0].set_title(f"NB03 relative fixed pattern (all {n} frames), rms {summary['pattern_rms_relative']:.3f}")
+    ax[0, 0].set_title(f"NB03 relative fixed pattern ({int(off.sum())} frames), rms {summary['pattern_rms_relative']:.3f}")
     ax[0, 1].imshow(P["all"][500:800, 1200:1500], origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
-    ax[0, 1].set_title("zoom 300×300 px")
-    ax[0, 2].imshow((P["B"] - P["A"]), origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
-    ax[0, 2].set_title(f"half B − half A (r = {summary['q1_stability_r']['split_half_A_vs_B']:.3f})")
+    ax[0, 1].set_title("zoom 300x300 px")
+    if "centred_mode" in P:
+        ax[0, 2].imshow(P["centred_mode"], origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
+        r_oc = summary["q1_stability_r"]["offset_vs_centred_pointing"]
+        ax[0, 2].set_title(f"centred-pointing frames only (r vs offset = {r_oc:.3f})")
     ax[1, 0].plot(bd["rel_d"][m2][::20], bd["rel_b"][m2][::20], ".", ms=1)
     ax[1, 0].plot([-.2, .2], [-.2, .2], "k-", lw=.5)
     ax[1, 0].set_xlabel("relative pattern, dark frames")
@@ -247,9 +252,9 @@ def main():
     ax[1, 1].plot([-lim, lim], [-lim, lim], "k-", lw=.5)
     ax[1, 1].set_xlabel("absolute pattern, dark frames (counts)")
     ax[1, 1].set_title(f"absolute: slope {slope_abs:.2f} (brightness ratio {ratio_sm:.2f})")
-    for tag, c in (("uncorrected", "0.5"), ("corrected", "r")):
+    for tag, col in (("uncorrected", "0.5"), ("corrected", "r")):
         d = rot[rot.method == tag]
-        ax[1, 2].plot(d.expected_dx, d.dx, "o", ms=3, color=c, label=tag)
+        ax[1, 2].plot(d.expected_dx, d.dx, "o", ms=3, color=col, label=tag)
     ax[1, 2].plot([-3, 3], [-3, 3], "k-", lw=.5)
     ax[1, 2].set_xlabel("expected x-motion: rotation + pointing change (px)")
     ax[1, 2].set_ylabel("measured, plain phase correlation (px)")
@@ -258,12 +263,6 @@ def main():
     fig.tight_layout()
     fig.savefig(CAL / "fixed_pattern_study.png", dpi=70)
     plt.close(fig)
-    del rel, sm
-    for p in (rel_path, sm_path):  # regenerable cache
-        try:
-            p.unlink()
-        except OSError:
-            pass
     print(json.dumps(summary, indent=1, default=float))
 
 
