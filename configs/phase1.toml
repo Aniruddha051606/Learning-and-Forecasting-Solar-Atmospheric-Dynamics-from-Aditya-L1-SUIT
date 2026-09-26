@@ -16,6 +16,8 @@ rays = 720
 # Rays whose search window comes closer than this to the CCD edge are dropped (vignetting, see DESIGN §0).
 edge_margin_px = 40
 # Angular harmonics fitted with the circle to absorb Level-1 distortion (0 = plain circle).
+# Recorded per frame for the study; registration uses the plain circle, because on real frames the
+# harmonic fit's centre is 3-4x noisier (docs/PHASE1.md, Registration).
 harmonics = 4
 clip_sigma = 3.0
 
@@ -34,3 +36,6 @@ core_r = 0.9
 # Common grid for every full-disk frame (both pipelines): disk-centred, solar north up.
 grid = 1536
 r_ref = 690.0
+# Local-quadratic smoothing of the per-frame limb centre within jump-free segments (±10 min ≈ ±7
+# frames): averages the ~1.4 px per-frame fit noise while following the ~1.5-2 h pointing oscillation.
+smooth_half_window_s = 600

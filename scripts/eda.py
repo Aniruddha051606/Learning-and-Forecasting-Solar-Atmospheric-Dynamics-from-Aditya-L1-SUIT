@@ -182,11 +182,11 @@ def plot_artifacts(frames, seams):
     ax[1, 0].set_ylabel("off-limb fraction < 0")
     nbfiles = set(f.loc[f.frame == "full_binned", "file"])
     s = seams[seams.file.isin(nbfiles) & (seams.axis == "vertical")]
-    piv = s.groupby("pos")[["step", "control"]].agg(["median", lambda v: v.quantile(.1), lambda v: v.quantile(.9)])
-    ax[1, 1].plot(piv.index, piv[("step", "median")] * 100, "r-", label="seam x=1023|1024 (median)")
-    ax[1, 1].fill_between(piv.index, piv[("step", "<lambda_0>")] * 100, piv[("step", "<lambda_1>")] * 100, color="r",
-                          alpha=.2, label="10-90 %")
-    ax[1, 1].plot(piv.index, piv[("control", "median")] * 100, "k--", label="control columns (+150 px)")
+    gb = s.groupby("pos")
+    med, q10, q90 = gb.step.median(), gb.step.quantile(.1), gb.step.quantile(.9)
+    ax[1, 1].plot(med.index, med * 100, "r-", label="seam x=1023|1024 (median)")
+    ax[1, 1].fill_between(med.index, q10 * 100, q90 * 100, color="r", alpha=.2, label="10-90 %")
+    ax[1, 1].plot(med.index, gb.control.median() * 100, "k--", label="control columns (+150 px)")
     ax[1, 1].set_xlabel("row (binned px)")
     ax[1, 1].set_ylabel("step across boundary (%)")
     ax[1, 1].set_title("NB03 vertical quadrant seam")
