@@ -1,0 +1,179 @@
+"""Per-frame measurements for the Phase 1 audit, QC and registration study.
+
+    python scripts/process_frames.py [--limit N]
+
+Reads <out>/manifest.parquet. For every full-disk frame: limb fits (distortion-aware and plain
+circle), artifact counts, seam step profiles, image statistics (global / disk / off-limb), and for
+consecutive NB03 binned frames the measured frame-to-frame image motion (phase correlation) plus a
+spike-persistence check. ROI frames get global statistics only; they are an operator-selected sample
+and are kept out of every disk-level analysis.
+
+Writes frames_full.parquet, frames_roi.parquet, seam_profiles.parquet and process_meta.json.
+"""
+import argparse
+import json
+import sys
+import time
+import traceback
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter, median_filter
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from suitdyn import config, geometry, io, qc  # noqa: E402
+
+CFG = config.load()
+MAX_PAIR_DT_S = 300
+
+
+def phase_motion(prev, cur, box):
+    """Image motion of `cur` relative to `prev` (px, +x/+y means features moved to larger x/y), from
+    phase correlation of high-passed crops of the same detector box. The box avoids the quadrant seam
+    and the limb, so the seam (fixed on the CCD) cannot pull the answer towards zero."""
+    from skimage.registration import phase_cross_correlation
+    y0, y1, x0, x1 = box
+    out = []
+    for im in (prev, cur):
+        c = im[y0:y1, x0:x1].astype(np.float64)
+        c = c - gaussian_filter(c, 15)
+        s = 1.4826 * np.median(np.abs(c - np.median(c)))
+        out.append(np.clip(c, -6 * s, 6 * s) * np.outer(np.hanning(c.shape[0]), np.hanning(c.shape[1])))
+    shift, err, _ = phase_cross_correlation(out[0], out[1], upsample_factor=20, normalization=None)
+    # skimage returns the shift that registers cur onto prev: features moved by -shift
+    return float(-shift[1]), float(-shift[0]), float(err)
+
+
+def full_frame(job):
+    row, prev_path, check_spikes = job
+    L, Q = CFG["limb"], CFG["qc"]
+    t0 = time.time()
+    out = {"file": row["file"]}
+    try:
+        im, _ = io.read(row["path"])
+        s = io.scale_of(im.shape)
+        geo = geometry.limb(im, row["CRPIX1"] - 1, row["CRPIX2"] - 1, row["R_SUN"], rays=L["rays"], window=L["window"],
+                            smooth_px=L["smooth_px"], edge_margin_px=L["edge_margin_px"], harmonics=L["harmonics"],
+                            clip_sigma=L["clip_sigma"], scale=s)
+        if geo is None:
+            out["error"] = "limb fit: too few usable rays"
+            return out, []
+        f, c = geo["limb"], geo["circle"]
+        out.update({f"limb_{k}": v for k, v in f.items() if k != "harm"})
+        out["limb_harm"] = f["harm"]
+        out.update({f"circ_{k}": c[k] for k in ("x0", "y0", "R", "rms", "n_used")})
+        e = geo["edges"]
+        out["edge_x"] = e["x"].astype(np.float32).tolist()
+        out["edge_y"] = e["y"].astype(np.float32).tolist()
+        out["edge_usable"] = e["usable"].tolist()
+        r = geometry.r_map_model(im.shape, f)
+        core = r < Q["core_r"]
+        spk, sig = qc.spikes(im, core, Q["spike_k"], Q["spike_rel"], Q["spike_max_area"])
+        edge = int(L["edge_margin_px"] * s)
+        m = qc.pixel_mask(im, r, row["clip_lo"], row["clip_hi"], spk, Q["seam_px"], Q["seam_halfwidth"], edge)
+        bad = (m & (qc.CLIP_LO | qc.CLIP_HI | qc.SPIKE | qc.SEAM)) > 0
+        out.update(noise_sigma=float(sig), n_pix=int(im.size),
+                   n_clip_lo=int((m & qc.CLIP_LO).astype(bool).sum()), n_clip_hi=int((m & qc.CLIP_HI).astype(bool).sum()),
+                   n_spike=int(spk.sum()), n_spike_disk=int((spk & (r < 1)).sum()),
+                   n_clip_hi_disk=int(((m & qc.CLIP_HI) > 0)[r < 1].sum()),
+                   disk_on_ccd=float((r <= 1).sum() / (np.pi * f["R"] ** 2)),
+                   disk_in_edge_margin=float(((m & qc.EDGE) > 0)[r <= 1].mean()),
+                   offlimb_neg_frac=float((im[(r > 1.05) & (r < 1.3)] < 0).mean()))
+        out.update(qc.stats(im.ravel(), "all"))
+        out.update(qc.stats(im[core & ~bad], "disk"))
+        out.update(qc.stats(im[(r > 1.05) & (r < 1.3) & ((m & qc.EDGE) == 0)], "offlimb"))
+        seams = []
+        cpx, _ = qc.seam_boundaries(im.shape, Q["seam_px"])
+        for axis, name in ((1, "vertical"), (0, "horizontal")):
+            pos, step = qc.seam_profile(im, r < 0.95, cpx, axis, band=int(64 * s), gap=(int(11 * s), int(5 * s)),
+                                        width=int(6 * s))
+            ctrl_pos, ctrl = qc.seam_profile(im, r < 0.95, cpx + int(150 * s), axis, band=int(64 * s),
+                                             gap=(int(11 * s), int(5 * s)), width=int(6 * s))
+            out[f"seam_{name}_median"] = float(np.nanmedian(step)) if np.isfinite(step).any() else np.nan
+            out[f"seam_{name}_absmax"] = float(np.nanmax(np.abs(step))) if np.isfinite(step).any() else np.nan
+            out[f"seam_{name}_control_median"] = float(np.nanmedian(ctrl)) if np.isfinite(ctrl).any() else np.nan
+            seams += [{"file": row["file"], "axis": name, "pos": float(p), "step": float(v), "control": float(w)}
+                      for p, v, w in zip(pos, step, ctrl)]
+        if prev_path is not None:
+            prev, _ = io.read(prev_path)
+            cy = int(round(f["y0"]))
+            box = (max(cy - 288, 0), cy + 288, int(1040 * s), int((1040 + 576) * s))
+            out["pc_dx"], out["pc_dy"], out["pc_err"] = phase_motion(prev, im, box)
+            if check_spikes and spk.any():
+                # a cosmic ray is gone 87 s later; a solar feature is still there
+                mp = median_filter(prev, 5)
+                resp = prev - mp
+                yy, xx = np.nonzero(spk)
+                yp = np.clip(np.round(yy - out["pc_dy"]).astype(int), 0, im.shape[0] - 1)
+                xp = np.clip(np.round(xx - out["pc_dx"]).astype(int), 0, im.shape[1] - 1)
+                out["spike_persist_frac"] = float((resp[yp, xp] > 0.5 * Q["spike_k"] * sig).mean())
+        out["seconds"] = round(time.time() - t0, 2)
+        return out, seams
+    except Exception:
+        out["error"] = traceback.format_exc()[-600:]
+        return out, []
+
+
+def roi_frame(row):
+    Q = CFG["qc"]
+    out = {"file": row["file"]}
+    try:
+        im, _ = io.read(row["path"])
+        spk, sig = qc.spikes(im, np.ones(im.shape, bool), Q["spike_k"], Q["spike_rel"], Q["spike_max_area"])
+        out.update(noise_sigma=float(sig), n_spike=int(spk.sum()), n_clip_lo=int((im <= row["clip_lo"]).sum()),
+                   n_clip_hi=int((im >= row["clip_hi"]).sum()), n_pix=int(im.size))
+        out.update(qc.stats(im[~spk], "all"))
+    except Exception:
+        out["error"] = traceback.format_exc()[-600:]
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=0, help="process only the first N frames of each kind (smoke test)")
+    a = ap.parse_args()
+    out = config.out_dir(CFG)
+    man = pd.read_parquet(out / "manifest.parquet")
+    man = man[man.read_error.isna()].sort_values("t")
+    full = man[man.frame.isin(["full", "full_binned"])].reset_index(drop=True)
+    roi = man[man.frame == "roi"].reset_index(drop=True)
+    if a.limit:
+        full, roi = full.head(a.limit), roi.head(a.limit)
+
+    jobs = []
+    nb = full[full.frame == "full_binned"].sort_values("t")
+    prev_of = {}
+    for k, (i, r) in enumerate(nb.iterrows()):
+        if k and (r.t - nb.iloc[k - 1].t).total_seconds() <= MAX_PAIR_DT_S:
+            prev_of[r.file] = (nb.iloc[k - 1].path, k % 10 == 0)
+    for _, r in full.iterrows():
+        p, chk = prev_of.get(r.file, (None, False))
+        jobs.append((r.to_dict(), p, chk))
+
+    t0 = time.time()
+    with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
+        res = list(ex.map(full_frame, jobs, chunksize=4))
+        roi_res = list(ex.map(roi_frame, [r.to_dict() for _, r in roi.iterrows()], chunksize=32))
+    frames = pd.DataFrame([r for r, _ in res])
+    seams = pd.DataFrame([s for _, ss in res for s in ss])
+    keep = ["file", "t", "obsid", "OBS_MODE", "FTR_NAME", "frame", "NAXIS1", "CMD_EXPT", "MEAS_EXP", "CRPIX1", "CRPIX2",
+            "R_SUN", "CROTA2", "RSUN_OBS", "DSUN_OBS", "clip_lo", "clip_hi"]
+    frames = full[keep].merge(frames, on="file", how="left")
+    roi_df = roi[keep + ["ROI_ID", "X1", "Y1"]].merge(pd.DataFrame(roi_res), on="file", how="left")
+    frames.to_parquet(out / "frames_full.parquet", index=False)
+    roi_df.to_parquet(out / "frames_roi.parquet", index=False)
+    seams.to_parquet(out / "seam_profiles.parquet", index=False)
+    meta = {"full_frames": len(frames), "roi_frames": len(roi_df),
+            "full_errors": int(frames.get("error", pd.Series(dtype=object)).notna().sum()),
+            "roi_errors": int(roi_df.get("error", pd.Series(dtype=object)).notna().sum()),
+            "seconds": round(time.time() - t0, 1), "manifest_rows": len(man), **CFG["_meta"]}
+    (out / "process_meta.json").write_text(json.dumps(meta, indent=1))
+    print(json.dumps(meta, indent=1))
+    if meta["full_errors"]:
+        print(frames.loc[frames.error.notna(), ["file", "error"]].head(5).to_string())
+
+
+if __name__ == "__main__":
+    main()

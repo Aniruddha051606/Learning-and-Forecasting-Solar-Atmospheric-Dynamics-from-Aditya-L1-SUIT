@@ -99,9 +99,22 @@ def limb(im, cx, cy, R, *, rays=720, window=0.07, smooth_px=2.0, edge_margin_px=
     fit = fit_limb(x, y, harmonics, clip_sigma)
     circ = fit_limb(x, y, 0, clip_sigma)
     fit["angular_coverage"] = float(usable.mean())
-    return {"limb": fit, "circle": circ}
+    return {"limb": fit, "circle": circ, "edges": {"theta": th, "x": ex, "y": ey, "usable": usable}}
 
 
 def disk_radius_map(shape, x0, y0, R):
     yy, xx = np.indices(shape, dtype=np.float32)
     return np.hypot(xx - x0, yy - y0) / R
+
+
+def r_map_model(shape, fit):
+    """Distance from the fitted centre in units of the fitted (distorted) limb radius at that angle,
+    so r = 1 lies on the measured limb everywhere."""
+    yy, xx = np.indices(shape, dtype=np.float32)
+    dx, dy = xx - fit["x0"], yy - fit["y0"]
+    phi = np.arctan2(dy, dx)
+    rad = np.full(shape, fit["R"], np.float32)
+    h = fit["harm"]
+    for j, m in enumerate(range(2, 2 + len(h) // 2)):
+        rad += h[2 * j] * np.cos(m * phi) + h[2 * j + 1] * np.sin(m * phi)
+    return np.hypot(dx, dy) / rad
