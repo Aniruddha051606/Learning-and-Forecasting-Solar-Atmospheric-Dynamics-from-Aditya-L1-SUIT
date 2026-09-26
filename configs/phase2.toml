@@ -1,0 +1,24 @@
+# Phase 2 settings. Read together with phase1.toml (paths, limb, qc, register).
+
+[dataset]
+# Prototype data set: offset pointing only (centred pointing ended 2026-09-23 05:00 UT, docs/PHASE2.md).
+pointing_mode = "offset"
+# QC flags that exclude a frame from the data set (a frame with other flags is kept and the flag stored).
+exclude_flags = ["pointing_mode_change", "limb_outlier", "spike_rate", "brightness_jump"]
+# The first frame of every observing-program block is 16-19 % too bright (PHASE1.md A8).
+drop_program_first_frame = true
+
+[split]
+# Cut only at natural observing gaps; every boundary falls in a gap longer than max_gap_s.
+# The test split is sealed: its frame list is hashed when the split is written and reading test
+# windows needs an explicit unseal (suitdyn.sequences).
+train = ["2026-09-23 05:00", "2026-09-24 23:45"]
+val = ["2026-09-25 00:00", "2026-09-25 14:30"]
+test = ["2026-09-25 16:00", "2026-09-26 00:00"]
+
+[sequences]
+# Two consecutive frames further apart than this are in different runs; no window spans a run break.
+max_gap_s = 300
+# Context lengths (frames) and horizons (frames) to index; elapsed times are stored per window.
+contexts = [1, 5, 20]
+horizons = [1, 5, 10, 20, 40, 80, 160]
