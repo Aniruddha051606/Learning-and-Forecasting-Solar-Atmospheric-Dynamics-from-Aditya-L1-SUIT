@@ -1,0 +1,36 @@
+# Phase 1 settings: manifest, audit, QC, registration. Every script reads this file; nothing is hard-coded.
+
+[paths]
+raw_root = "D:/Data/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
+out = "outputs/phase1"
+
+[run]
+workers = 6
+
+[limb]
+# Edge search window around the header radius, as a fraction of R.
+window = 0.07
+# Gaussian smoothing before the radial derivative, in pixels of a 2048 frame (scaled for 4096).
+smooth_px = 2.0
+rays = 720
+# Rays whose search window comes closer than this to the CCD edge are dropped (vignetting, see DESIGN §0).
+edge_margin_px = 40
+# Angular harmonics fitted with the circle to absorb Level-1 distortion (0 = plain circle).
+harmonics = 4
+clip_sigma = 3.0
+
+[qc]
+# Spike: residual from a 5x5 median above k robust sigma AND above this fraction of the local level.
+spike_k = 10.0
+spike_rel = 0.5
+spike_max_area = 6
+# Quadrant boundaries in 2048 (binned) pixels; doubled for 4096 frames.
+seam_px = 1024
+seam_halfwidth = 2
+# Disk region used for intensity statistics, in units of R.
+core_r = 0.9
+
+[register]
+# Common grid for every full-disk frame (both pipelines): disk-centred, solar north up.
+grid = 1536
+r_ref = 690.0

@@ -1,0 +1,9 @@
+# data and generated products never go in git; they are rebuilt from the raw manifest + config + commit
+outputs/
+data/
+*.fits
+*.zarr/
+mlruns/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
