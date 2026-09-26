@@ -14,6 +14,16 @@ def load(path="configs/phase1.toml"):
     return cfg
 
 
+def load_phase2():
+    """Phase 1 settings (paths, limb, qc, register) plus configs/phase2.toml, with both hashes recorded."""
+    cfg = load()
+    p = ROOT / "configs/phase2.toml"
+    raw = p.read_bytes()
+    cfg.update(tomllib.loads(raw.decode()))
+    cfg["_meta"]["phase2_config_sha256"] = hashlib.sha256(raw).hexdigest()
+    return cfg
+
+
 def git_state():
     """Commit hash and whether the tree has uncommitted changes, recorded with every output."""
     try:
