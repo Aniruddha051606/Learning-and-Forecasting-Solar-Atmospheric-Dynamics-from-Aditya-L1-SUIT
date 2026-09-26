@@ -59,11 +59,13 @@ def nanmedian0(a):
     """Median over axis 0 ignoring NaN, by sorting (NaN sorts last, so the median of the c finite values
     sits at positions (c-1)//2 and c//2). Identical to np.nanmedian(a, 0) and ~25 % faster on
     (440, 64, 512) float32 stacks with 30 % NaN."""
-    s = np.sort(a, axis=0)
+    # sort along a contiguous axis: sorting along axis 0 of a C-ordered stack is strided and several
+    # times slower (the first full calibration pass took 76 min)
+    s = np.sort(np.ascontiguousarray(np.moveaxis(a, 0, -1)), axis=-1)
     c = np.isfinite(a).sum(0)
     lo = np.clip((c - 1) // 2, 0, a.shape[0] - 1)
     hi = np.clip(c // 2, 0, a.shape[0] - 1)
-    v = 0.5 * (np.take_along_axis(s, lo[None], 0)[0] + np.take_along_axis(s, hi[None], 0)[0])
+    v = 0.5 * (np.take_along_axis(s, lo[..., None], -1)[..., 0] + np.take_along_axis(s, hi[..., None], -1)[..., 0])
     return np.where(c > 0, v, np.nan)
 
 
