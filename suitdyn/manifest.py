@@ -44,7 +44,8 @@ def read_row(path):
     except Exception as e:
         return {"file": path.name, "path": str(path), "read_error": str(e)[:300]}
     row = {k: h.get(k) for k in COLUMNS}
-    row.update(file=path.name, path=str(path), obsid=path.parent.name, bytes=path.stat().st_size,
+    st = path.stat()
+    row.update(file=path.name, path=str(path), obsid=path.parent.name, bytes=st.st_size, mtime_ns=st.st_mtime_ns,
                sha256=sha256(path), read_error=None,
                header_json=json.dumps({k: (v if isinstance(v, (int, float, str, bool)) or v is None else str(v))
                                        for k, v in h.items() if k not in ("COMMENT", "HISTORY", "")}))
@@ -58,11 +59,25 @@ def frame_type(df):
     return np.select([roi, binned], ["roi", "full_binned"], "full")
 
 
-def build(raw_root, workers=8):
+def build(raw_root, workers=8, previous=None):
+    """Manifest of every *.fits under raw_root. Rows of `previous` (an earlier manifest) are reused for
+    files whose path, size and modification time are unchanged, so only new or changed files are read
+    and checksummed. Partial downloads (*.fits.part) are never listed."""
     files = sorted(Path(raw_root).rglob("*.fits"))
+    reuse = {}
+    if previous is not None and "mtime_ns" in previous:
+        ok = previous["read_error"].isna()
+        reuse = {(r.path, r.bytes, r.mtime_ns): r for r in previous[ok].itertuples(index=False)}
+    todo, kept = [], []
+    for f in files:
+        st = f.stat()
+        r = reuse.get((str(f), st.st_size, st.st_mtime_ns))
+        (kept if r is not None else todo).append(r._asdict() if r is not None else f)
     with ThreadPoolExecutor(workers) as ex:
-        rows = list(ex.map(read_row, files))
-    df = pd.DataFrame(rows)
+        rows = list(ex.map(read_row, todo))
+    base = ["file", "path", "obsid", "bytes", "mtime_ns", "sha256", "read_error", "header_json"] + COLUMNS
+    df = pd.DataFrame([{k: r.get(k) for k in r if k in base or k.startswith("name_")} for r in kept] + rows)
+    df.attrs["reused"], df.attrs["read"] = len(kept), len(todo)
     ok = df["read_error"].isna()
     df.loc[ok, "t"] = pd.to_datetime(df.loc[ok, "DATE-OBS"])
     df["frame"] = None

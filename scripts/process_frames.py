@@ -130,11 +130,19 @@ def roi_frame(row):
     return out
 
 
+def proc_signature():
+    """Hash of the settings that change per-frame results; rows made with other settings are redone."""
+    import hashlib
+    return hashlib.sha256(json.dumps({"limb": CFG["limb"], "qc": CFG["qc"]}, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="process only the first N frames of each kind (smoke test)")
+    ap.add_argument("--full", action="store_true", help="ignore earlier results and process every frame")
     a = ap.parse_args()
     out = config.out_dir(CFG)
+    sig = proc_signature()
     man = pd.read_parquet(out / "manifest.parquet")
     man = man[man.read_error.isna()].sort_values("t")
     full = man[man.frame.isin(["full", "full_binned"])].reset_index(drop=True)
@@ -142,33 +150,64 @@ def main():
     if a.limit:
         full, roi = full.head(a.limit), roi.head(a.limit)
 
-    jobs = []
     nb = full[full.frame == "full_binned"].sort_values("t")
     prev_of = {}
     for k, (i, r) in enumerate(nb.iterrows()):
         if k and (r.t - nb.iloc[k - 1].t).total_seconds() <= MAX_PAIR_DT_S:
             prev_of[r.file] = (nb.iloc[k - 1].path, k % 10 == 0)
-    for _, r in full.iterrows():
+    full["prev_file"] = full.file.map(lambda f: Path(prev_of[f][0]).name if f in prev_of else None)
+
+    # Incremental: reuse rows computed from the same file content, settings and previous-frame pairing.
+    old_full = old_roi = old_seams = None
+    if not a.full and not a.limit and (out / "frames_full.parquet").exists():
+        old_full = pd.read_parquet(out / "frames_full.parquet")
+        old_roi = pd.read_parquet(out / "frames_roi.parquet")
+        old_seams = pd.read_parquet(out / "seam_profiles.parquet")
+        sha = man.set_index("file").sha256
+        for df in (old_full, old_roi):
+            if "sha256" not in df:  # results from before incremental runs: made with the current settings
+                df["sha256"], df["proc_sig"] = df.file.map(sha), sig
+            if "prev_file" not in df:
+                df["prev_file"] = None
+        cur = full.set_index("file")
+        ok = (old_full.proc_sig.eq(sig) & old_full.file.isin(cur.index)
+              & old_full.sha256.eq(old_full.file.map(sha))
+              & (old_full.pc_dx.isna() == old_full.file.map(cur.prev_file).isna()))
+        old_full = old_full[ok]
+        old_roi = old_roi[old_roi.proc_sig.eq(sig) & old_roi.sha256.eq(old_roi.file.map(sha))]
+        old_seams = old_seams[old_seams.file.isin(old_full.file)]
+    done_full = set() if old_full is None else set(old_full.file)
+    done_roi = set() if old_roi is None else set(old_roi.file)
+
+    jobs = []
+    for _, r in full[~full.file.isin(done_full)].iterrows():
         p, chk = prev_of.get(r.file, (None, False))
         jobs.append((r.to_dict(), p, chk))
+    roi_todo = roi[~roi.file.isin(done_roi)]
+    print(f"full-disk: {len(jobs)} to process, {len(done_full)} reused; ROI: {len(roi_todo)} to process, "
+          f"{len(done_roi)} reused", flush=True)
 
     t0 = time.time()
     with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
         res = list(ex.map(full_frame, jobs, chunksize=4))
-        roi_res = list(ex.map(roi_frame, [r.to_dict() for _, r in roi.iterrows()], chunksize=32))
-    frames = pd.DataFrame([r for r, _ in res])
+        roi_res = list(ex.map(roi_frame, [r.to_dict() for _, r in roi_todo.iterrows()], chunksize=32))
+    new = pd.DataFrame([r for r, _ in res]) if res else pd.DataFrame(columns=["file"])
     seams = pd.DataFrame([s for _, ss in res for s in ss])
     keep = ["file", "t", "obsid", "OBS_MODE", "FTR_NAME", "frame", "NAXIS1", "CMD_EXPT", "MEAS_EXP", "CRPIX1", "CRPIX2",
-            "R_SUN", "CROTA2", "RSUN_OBS", "DSUN_OBS", "clip_lo", "clip_hi"]
-    frames = full[keep].merge(frames, on="file", how="left")
-    roi_df = roi[keep + ["ROI_ID", "X1", "Y1"]].merge(pd.DataFrame(roi_res), on="file", how="left")
+            "R_SUN", "CROTA2", "RSUN_OBS", "DSUN_OBS", "clip_lo", "clip_hi", "sha256"]
+    new = full[keep + ["prev_file"]].merge(new, on="file", how="inner").assign(proc_sig=sig)
+    new_roi = roi_todo[keep + ["ROI_ID", "X1", "Y1"]].merge(pd.DataFrame(roi_res or [{"file": None}]), on="file",
+                                                             how="inner").assign(proc_sig=sig)
+    frames = pd.concat([d for d in (old_full, new) if d is not None and len(d)], ignore_index=True).sort_values("t")
+    roi_df = pd.concat([d for d in (old_roi, new_roi) if d is not None and len(d)], ignore_index=True).sort_values("t")
+    seams = pd.concat([d for d in (old_seams, seams) if d is not None and len(d)], ignore_index=True)
     frames.to_parquet(out / "frames_full.parquet", index=False)
     roi_df.to_parquet(out / "frames_roi.parquet", index=False)
     seams.to_parquet(out / "seam_profiles.parquet", index=False)
-    meta = {"full_frames": len(frames), "roi_frames": len(roi_df),
+    meta = {"full_frames": len(frames), "roi_frames": len(roi_df), "processed_now": [len(jobs), len(roi_todo)],
             "full_errors": int(frames.get("error", pd.Series(dtype=object)).notna().sum()),
             "roi_errors": int(roi_df.get("error", pd.Series(dtype=object)).notna().sum()),
-            "seconds": round(time.time() - t0, 1), "manifest_rows": len(man), **CFG["_meta"]}
+            "proc_sig": sig, "seconds": round(time.time() - t0, 1), "manifest_rows": len(man), **CFG["_meta"]}
     (out / "process_meta.json").write_text(json.dumps(meta, indent=1))
     print(json.dumps(meta, indent=1))
     if meta["full_errors"]:
