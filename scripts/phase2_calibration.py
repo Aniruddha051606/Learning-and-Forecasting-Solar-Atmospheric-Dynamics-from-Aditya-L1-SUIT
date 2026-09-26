@@ -58,15 +58,20 @@ def _job(args):
     return k
 
 
-def select_frames(n):
+def select_frames(n, n_centred=120):
+    """n offset-mode frames spread over time (the dataset), plus up to n_centred centred-mode frames used
+    only to test that the pattern is fixed to the detector."""
     reg = pd.read_parquet(OUT / "registration.parquet")
     man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path", "clip_lo", "clip_hi"])
     nb = reg[(reg.frame == "full_binned") & reg.qc_usable].merge(man, on="file").sort_values("t")
-    bad = nb.qc_reasons.fillna("").str.contains("brightness_jump|limb_outlier|spike_rate")
+    bad = nb.qc_reasons.fillna("").str.contains("brightness_jump|limb_outlier|spike_rate|pointing_mode_change")
     first = nb.OBS_MODE.ne(nb.OBS_MODE.shift())  # first frame of every program block (A8)
     nb = nb[~bad & ~first].reset_index(drop=True)
-    idx = np.linspace(0, len(nb) - 1, min(n, len(nb))).astype(int)
-    return nb.iloc[idx].reset_index(drop=True)
+    parts = []
+    for mode, m in (("offset", n), ("centred", n_centred)):
+        g = nb[nb.pointing_mode == mode]
+        parts.append(g.iloc[np.linspace(0, len(g) - 1, min(m, len(g))).astype(int)] if len(g) else g)
+    return pd.concat(parts).reset_index(drop=True)
 
 
 def corr(a, b, m):
@@ -160,18 +165,21 @@ def main():
     sm = np.memmap(sm_path, dtype=np.float16, mode="r", shape=(n,) + SHAPE)
     print(f"residuals of {n} frames in {time.time() - t0:.0f} s", flush=True)
 
-    k = np.arange(n)
-    halves = {"A": k % 2 == 0, "B": k % 2 == 1}
+    off = (sel.pointing_mode == "offset").values
+    k = np.cumsum(off) - 1
+    halves = {"A": off & (k % 2 == 0), "B": off & (k % 2 == 1)}
     days = sel.t.dt.floor("D")
-    last_day = days.max()
-    groups = {"early_days": (days < last_day).values, "last_day": (days == last_day).values,
-              "before_state_change": (sel.t < STATE_CHANGE).values, "after_state_change": (sel.t >= STATE_CHANGE).values}
-    P = {name: masked_median(rel, m) for name, m in {**halves, **groups, "all": np.ones(n, bool)}.items()}
+    last_day = days[off].max()
+    groups = {"early_days": off & (days < last_day).values, "last_day": off & (days == last_day).values,
+              "before_state_change": off & (sel.t < STATE_CHANGE).values,
+              "after_state_change": off & (sel.t >= STATE_CHANGE).values,
+              "centred_mode": ~off}
+    P = {name: masked_median(rel, m) for name, m in {**halves, **groups, "all": off}.items() if m.any()}
     cnt = np.isfinite(P["all"])
     disk = cnt & (np.abs(P["all"]) < 0.5)
 
     # Q2: multiplicative vs additive, from bright/dark frames at each pixel
-    bd = bright_dark(rel, sm, n)
+    bd = bright_dark(rel, sm, n)  # all frames: a pixel's brightness varies most across pointing modes
     m2 = disk & np.isfinite(bd["rel_b"]) & np.isfinite(bd["rel_d"]) & (np.abs(P["all"]) > 2 * np.nanstd(P["all"][disk]))
     ratio_sm = np.nanmedian((bd["sm_b"] / bd["sm_d"])[m2])
     slope_abs = np.polyfit(bd["abs_d"][m2], bd["abs_b"][m2], 1)[0]
@@ -204,6 +212,9 @@ def main():
             "before_vs_after_state_change": corr(P["before_state_change"], P["after_state_change"],
                                                  disk & np.isfinite(P["before_state_change"])
                                                  & np.isfinite(P["after_state_change"])),
+            "offset_vs_centred_pointing": corr(P["all"], P["centred_mode"],
+                                               disk & np.isfinite(P["centred_mode"])) if "centred_mode" in P else None,
+            "centred_frames": int((~off).sum()),
         },
         "q2_mode": {"brightness_ratio_bright_over_dark": float(ratio_sm),
                     "slope_relative_pattern_bright_vs_dark": float(slope_rel),

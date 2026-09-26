@@ -90,6 +90,13 @@ def local_quadratic(t, v, half_window_s, clip=4.0):
     return out
 
 
+def pointing_mode(x0, y0, size):
+    """'centred' when the disk centre is within 200 (binned) px of the detector centre, else 'offset'.
+    The spacecraft pointing changed on 2026-09-23 ~05:00 UT from centred to offset (docs/PHASE2.md)."""
+    c = (size - 1) / 2
+    return np.where(np.hypot(x0 - c, y0 - c) < 200 * size / 2048, "centred", "offset")
+
+
 def _segment_positions(job):
     """Image-content positions of every frame of one jump-free segment, relative to its first frame,
     rotation removed. Keyframes every KEY frames are linked to each other; every frame is correlated
@@ -127,6 +134,8 @@ def adopt_nb03(nb, fp):
     nb["run"] = (dt.isna() | (dt > RUN_GAP_S)).cumsum()
     nb["jump_px"] = np.hypot(nb.pc_dx, nb.pc_dy).where(nb.run.eq(nb.run.shift()))
     nb["segment"] = (nb.run.ne(nb.run.shift()) | (nb.jump_px > JUMP_PX)).cumsum()
+    nb["pointing_mode"] = pointing_mode(nb.cc_x0, nb.cc_y0, 2048)
+    nb["segment"] = (nb.segment.ne(nb.segment.shift()) | nb.pointing_mode.ne(nb.pointing_mode.shift())).cumsum()
     man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
     jobs = []
     for _, g in nb.groupby("segment"):
@@ -175,6 +184,7 @@ def adopt_full(full, nb):
     full["nb_dt_s"] = np.abs(t_f[:, None] - t_nb[None, :]).min(1) / 1e9
     full["reg_R"] = full.cc_R
     full["reg_method"] = "circle_common_rays_per_frame"
+    full["pointing_mode"] = pointing_mode(full.cc_x0, full.cc_y0, 4096)
     return full
 
 
@@ -195,7 +205,10 @@ def validate(nb, fp, lags=(1, 10, 40), n_per_lag=20, seed=0):
     rows = []
     for lag in lags:
         cands = [i for i in range(len(nb) - lag) if nb.run.iloc[i] == nb.run.iloc[i + lag]
-                 and nb.segment.iloc[i] != nb.segment.iloc[i + lag]]
+                 and nb.segment.iloc[i] != nb.segment.iloc[i + lag]
+                 and nb.pointing_mode.iloc[i] == nb.pointing_mode.iloc[i + lag]
+                 and np.hypot(nb.reg_x0.iloc[i + lag] - nb.reg_x0.iloc[i],
+                              nb.reg_y0.iloc[i + lag] - nb.reg_y0.iloc[i]) < 60]
         for i in rng.choice(cands, min(n_per_lag, len(cands)), replace=False):
             a, b = nb.iloc[i], nb.iloc[i + lag]
             dts = (b.t - a.t).total_seconds()
@@ -233,6 +246,8 @@ def qc_decision(fr):
                 rs.append(name)
         if (r.get("jump_px", 0) or 0) > JUMP_PX:
             rs.append("pointing_jump")
+        if r.get("mode_change", False):
+            rs.append("pointing_mode_change")
         reasons.append(";".join(rs))
         usable.append(ok)
     return reasons, np.array(usable)
@@ -341,13 +356,20 @@ def main():
     roll = nb.set_index("t").disk_median.rolling("30min", center=True).median()
     d = nb.disk_median.values - roll.values
     reg["z_bright"] = reg.file.map(pd.Series(d / max(robust_sigma(d), 1), index=nb.file)).fillna(0)
+    isnb = reg.frame == "full_binned"
+    reg["mode_change"] = False
+    nbi = reg[isnb].sort_values("t")
+    # frames within 10 min of a change of pointing mode (the slew)
+    ch = nbi.t[nbi.pointing_mode.ne(nbi.pointing_mode.shift()) & nbi.pointing_mode.shift().notna()]
+    for tc in ch:
+        reg.loc[isnb & ((reg.t - tc).abs() < pd.Timedelta("10min")), "mode_change"] = True
     reg["qc_reasons"], reg["qc_usable"] = qc_decision(reg)
 
     val = validate(nb, fp)
     figures(nb, val, fp_info)
     before_after(nb)
 
-    keep = ["file", "t", "frame", "FTR_NAME", "OBS_MODE", "run", "segment", "reg_method", "reg_x0", "reg_y0", "reg_R",
+    keep = ["file", "t", "frame", "FTR_NAME", "OBS_MODE", "pointing_mode", "run", "segment", "reg_method", "reg_x0", "reg_y0", "reg_R",
             "reg_x0_anchor_sd", "reg_y0_anchor_sd", "CROTA2", "img_x", "img_y", "img_err", "cc_x0", "cc_y0", "cc_R",
             "cc_rms", "cc_rays", "common_rays", "circle_smoothed_x0", "circle_smoothed_y0", "CRPIX1", "CRPIX2", "R_SUN",
             "jump_px", "limb_minus_reg_x", "limb_minus_reg_y", "nb_x0", "nb_y0", "nb_dt_s", "filter_offset_x",
@@ -368,6 +390,9 @@ def main():
     summary = {
         "fixed_pattern": {"rms_counts": float(fp.std()), "split_half_r": fp_info[1],
                           "highpass_frame_rms_counts": fp_info[2], "frames": int(len(pick))},
+        "pointing_modes": {m: {"frames": int(len(g)), "start": str(g.t.min()), "end": str(g.t.max()),
+                               "median_centre": [float(g.reg_x0.median()), float(g.reg_y0.median())]}
+                           for m, g in nb.groupby("pointing_mode")},
         "nb03": {"frames": int(len(nb)), "runs": int(nb.run.nunique()), "segments": int(nb.segment.nunique()),
                  "pointing_jumps": int((nb.jump_px > JUMP_PX).sum()), "common_rays": int(nb.common_rays.iloc[0]),
                  "circle_frame_to_frame_px": [float(diffs.cc_x0.std() / np.sqrt(2)), float(diffs.cc_y0.std() / np.sqrt(2))],
