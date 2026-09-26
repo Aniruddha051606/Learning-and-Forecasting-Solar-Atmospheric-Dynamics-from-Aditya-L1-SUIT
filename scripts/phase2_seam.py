@@ -48,7 +48,7 @@ def _frame(args):
     path, x0, y0, R, pattern_path = args
     im, _ = io.read(path)
     if pattern_path:
-        im = flat.correct(im, np.load(pattern_path), "multiplicative")
+        im = flat.correct(im, np.load(pattern_path), "additive")
     im = median_filter(im, 3)  # suppress spikes and single-pixel pattern residue
     yy, xx = np.mgrid[0:1344, 560:1020].astype(np.float64)
     xm = 2 * x0 - xx  # east-west mirror about the disk centre, same row
@@ -81,10 +81,10 @@ def main():
     a = ap.parse_args()
     reg = pd.read_parquet(OUT / "registration.parquet")
     man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path"])
-    nb = reg[(reg.frame == "full_binned") & reg.qc_usable].merge(man, on="file").sort_values("t")
+    nb = reg[(reg.frame == "full_binned") & reg.qc_usable & (reg.pointing_mode == "offset")].merge(man, on="file").sort_values("t")
     nb = nb[~nb.OBS_MODE.ne(nb.OBS_MODE.shift())]
     sel = nb.iloc[np.linspace(0, len(nb) - 1, min(a.frames, len(nb))).astype(int)]
-    pattern = CAL / "nb03_pattern_multiplicative.npy"
+    pattern = CAL / "nb03_pattern_additive_hp8.npy"  # adopted in the calibration follow-up
     pp = str(pattern) if pattern.exists() else ""
     with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
         res = list(ex.map(_frame, [(r.path, r.reg_x0, r.reg_y0, r.reg_R, pp) for r in sel.itertuples()]))
