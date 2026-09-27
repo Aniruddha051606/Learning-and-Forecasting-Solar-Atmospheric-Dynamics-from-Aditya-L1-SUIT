@@ -1,22 +1,20 @@
-"""Phase 3 data preparation: frame cache and derotated samples (train, early-stop hold-out, val).
+"""Phase 3 data preparation: the frame cache and the sample index of one data set.
 
-    python scripts/phase3_prepare.py [--grid-factor 4] [--train-stride 2]
+    python scripts/phase3_prepare.py
 
-1. Frame cache (outputs/phase3/cache/frames_<G>.npy, float16): every store frame, QC-masked, block-averaged
-   to G = 1536 / grid_factor, pointing-response corrected (Phase 2 §4.2), divided by its own disk median
-   (Phase 2 §4.3). NaN = invalid.
-2. Samples, from the Phase 2 window index (context 5; horizons 20/40/80/160 frames): the five context
-   frames each rotated to the target time (so persistence of the last one IS baseline B1), the target,
-   and per-sample metadata (times, run, horizon, elapsed seconds). Splits:
-     train    training runs except the last one
-     holdout  the last training run: early stopping only (the validation split is never used to choose
-              a model, so it stays a clean reporting set)
-     val      the validation split, every window
-   The test split is sealed and not read.
-Everything is recorded in outputs/phase3/cache/prepare_meta.json with the git commit and config hashes.
+Settings: configs/phase3.toml [samples]. Writes outputs/datasets/<name>/phase3/cache/:
+  frames_<G>.npy        every store frame once (float16, NaN = invalid): QC-masked, block-averaged to
+                        G = 1536 / grid_factor, pointing-response corrected (PHASE2 §4.2), divided by its
+                        own disk median (PHASE2 §4.3)
+  samples_<G>.parquet   one row per window (context K, horizon H): set, horizon, run, ctx (K frame indices),
+                        tgt (target frame index), dt_context_s (K elapsed seconds to the target), b0, times.
+                        Sets: train = training runs except the last; holdout = the last training run
+                        (early stopping and baseline tuning only); val = validation. The sealed test split
+                        is not read here.
+  mu_<G>.npy, trusted_<G>.npy (the Phase 2 trusted region, resized), prepare_meta.json (provenance)
+Samples are assembled on the fly (suitdyn/ml/data.py); no sample array is stored.
 """
-import argparse
-import json
+import hashlib
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -27,14 +25,10 @@ import pandas as pd
 import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import baselines, config, normalize, progress, response  # noqa: E402
+from suitdyn import atomic, config, normalize, paths, progress, response  # noqa: E402
 
-CFG = config.load_phase2()
-STORES = config.ROOT / "outputs" / "phase2" / "stores"
-SEQ = config.seq_dir()
-OUT = config.phase3_dir("cache")
-HORIZONS = (20, 40, 80, 160)
-CONTEXT = 5
+CFG = config.load_dataset()
+P3 = config.load_phase3()
 _G = {}
 
 
@@ -44,110 +38,89 @@ def _init(zpath, f, resp_path, pointing):
 
 
 def _frame(i):
+    import warnings
     img = _G["img"][i].astype(np.float32)
     img[_G["mask"][i] != 0] = np.nan
     f = _G["f"]
     n = img.shape[0] // f
-    with np.errstate(invalid="ignore"):
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            img = np.nanmean(img.reshape(n, f, n, f), axis=(1, 3))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        img = np.nanmean(img.reshape(n, f, n, f), axis=(1, 3))
     x0, y0 = _G["pointing"][i]
-    img = img * response.factor(_G["resp"], n, x0, y0)
-    return i, img
+    return i, img * response.factor(_G["resp"], n, x0, y0)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default=config.DATASET)
-    ap.add_argument("--grid-factor", type=int, default=4)
-    ap.add_argument("--train-stride", type=int, default=2)
-    a = ap.parse_args()
     t0 = time.time()
-    OUT.mkdir(parents=True, exist_ok=True)
-    zpath = str(STORES / f"{a.store}.zarr")
+    S = P3["samples"]
+    name = config.DATASET
+    out = paths.phase3("cache")
+    zpath = str(paths.stores(f"{name}.zarr"))
     g = zarr.open_group(zpath, mode="r")
-    fr = pd.read_parquet(STORES / f"{a.store}.frames.parquet")
-    G = g["nb03/image"].shape[1] // a.grid_factor
-    r_ref = float(g.attrs["r_ref"]) / a.grid_factor
+    fr = pd.read_parquet(paths.stores(f"{name}.frames.parquet"))
+    G = g["nb03/image"].shape[1] // S["grid_factor"]
+    r_ref = float(g.attrs["r_ref"]) / S["grid_factor"]
     mu = normalize.mu_map(G, r_ref)
     disk = mu > np.sqrt(1 - 0.95 ** 2)
     core = mu > np.sqrt(1 - 0.9 ** 2)
-    resp_path = config.ROOT / "outputs" / "phase2" / "response" / f"response_{a.store}.npz"
+    resp_path = paths.phase2("response", f"response_{name}.npz")
     pointing = {int(r.store_index): (float(r.reg_x0), float(r.reg_y0)) for r in fr.itertuples()}
 
     # 1. frame cache
     frames = np.full((len(fr), G, G), np.nan, np.float16)
+    fid = fr.set_index("store_index").frame_id
     with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init,
-                             initargs=(zpath, a.grid_factor, str(resp_path), pointing)) as ex:
-        fid = fr.set_index("store_index").frame_id
+                             initargs=(zpath, S["grid_factor"], str(resp_path), pointing)) as ex:
         for k, (i, img) in enumerate(ex.map(_frame, fr.store_index.astype(int).tolist(), chunksize=8)):
             progress.report("phase3_prepare: frame cache", item=fid.get(i), i=k, n=len(fr))
             med = np.nanmedian(img[core])
-            img = np.where(disk, img / med, np.nan)
-            frames[i] = img.astype(np.float16)
-    np.save(OUT / f"frames_{G}.npy", frames)
+            frames[i] = np.where(disk, img / med, np.nan).astype(np.float16)
+    atomic.save_npy(out / f"frames_{G}.npy", frames)
     print(f"frame cache {frames.shape} ({time.time() - t0:.0f} s)", flush=True)
 
-    # 2. samples
-    seqf = pd.read_parquet(SEQ / "frames.parquet")
-    pos2store = pd.Series(fr.store_index.values, index=fr.frame_id).reindex(seqf.frame_id).values.astype(int)
-    man = pd.read_parquet(config.out_dir(CFG) / "manifest.parquet", columns=["file", "HGLT_OBS"]).set_index("file")
-    win = pd.read_parquet(SEQ / "windows.parquet")
-    win = win[(win.context == CONTEXT) & win.horizon.isin(HORIZONS) & win.split.isin(["train", "val"])].copy()
+    # 2. sample index
+    seqf = pd.read_parquet(paths.sequences("frames.parquet"))
+    pos2store = pd.Series(fr.store_index.values, index=fr.frame_id).reindex(seqf.frame_id).values
+    assert not np.isnan(pos2store.astype(float)).any(), "a data-set frame is missing from the store"
+    pos2store = pos2store.astype(np.int64)
+    man = pd.read_parquet(paths.archive("manifest.parquet"), columns=["file", "HGLT_OBS"]).set_index("file")
+    win = pd.read_parquet(paths.sequences("windows.parquet"))
+    K = int(S["context"])
+    win = win[(win.context == K) & win.horizon.isin(S["horizons"]) & win.split.isin(["train", "val"])].copy()
     runs_train = sorted(seqf.loc[seqf.split == "train", "run"].unique())
-    last_run = runs_train[-1]
+    holdout_run = runs_train[-1]
     win["run"] = seqf.run.values[win["last"].values]
-    win["set"] = np.where(win.split == "val", "val", np.where(win.run == last_run, "holdout", "train"))
-    parts = []
-    for (s, h), d in win.groupby(["set", "horizon"]):
-        parts.append(d.iloc[::a.train_stride] if s == "train" else d)
-    win = pd.concat(parts).sort_values(["set", "horizon", "last"]).reset_index(drop=True)
-
-    meta_rows = []
-    X = np.lib.format.open_memmap(OUT / f"X_{G}.npy", mode="w+", dtype=np.float16, shape=(len(win), CONTEXT, G, G))
-    Y = np.lib.format.open_memmap(OUT / f"Y_{G}.npy", mode="w+", dtype=np.float16, shape=(len(win), G, G))
-    coord_cache = {}
-    for n, w in win.iterrows():
-        pos = list(range(int(w["first"]), int(w["last"]) + 1))
-        tgt = int(w.target)
-        progress.report("phase3_prepare: samples", item=seqf.frame_id.iloc[tgt], i=n, n=len(win),
-                        horizon=int(w.horizon), set=w["set"])
-        t_tgt = seqf.t.iloc[tgt]
-        b0 = float(man.loc[seqf.frame_id.iloc[tgt], "HGLT_OBS"])
-        dts = []
-        for k, p in enumerate(pos):
-            dt = (t_tgt - seqf.t.iloc[p]).total_seconds()
-            key = (round(dt / 2) * 2, round(b0, 1))  # 2-s bins: < 0.001 px of rotation at 384²
-            if key not in coord_cache:
-                coord_cache[key] = baselines.derotation_coords(G, r_ref, key[1], key[0])
-            X[n, k] = baselines.rotated_persistence(frames[pos2store[p]].astype(np.float32), r_ref, b0, dt,
-                                                    coords=coord_cache[key]).astype(np.float16)
-            dts.append(dt)
-        Y[n] = frames[pos2store[tgt]]
-        meta_rows.append({"sample": n, "set": w["set"], "horizon": int(w.horizon), "run": int(w.run),
-                          "t_last": seqf.t.iloc[int(w["last"])], "t_target": t_tgt, "dt_target_s": dts[-1],
-                          "dt_context_s": dts, "store_last": int(pos2store[int(w['last'])]),
-                          "store_target": int(pos2store[tgt])})
-        if len(coord_cache) > 3000:
-            coord_cache.clear()
-        if n % 500 == 0:
-            print(f"{n}/{len(win)} samples ({time.time() - t0:.0f} s)", flush=True)
-    X.flush()
-    Y.flush()
-    meta = pd.DataFrame(meta_rows)
-    meta.to_parquet(OUT / f"samples_{G}.parquet", index=False)
-    np.save(OUT / f"mu_{G}.npy", mu.astype(np.float32))
-    # trusted region (Phase 2, training split, after the response correction), resized to G
-    tr = np.load(config.ROOT / "outputs" / "phase2" / "noise_maps" / f"noise_maps_{a.store}_train_g2_resp.npz")["trusted"]
-    idx = (np.arange(G) * tr.shape[0] / G).astype(int)
-    np.save(OUT / f"trusted_{G}.npy", tr[np.ix_(idx, idx)])
-    info = {"grid": G, "r_ref": r_ref, "context": CONTEXT, "horizons": HORIZONS, "train_stride": a.train_stride,
-            "holdout_run": int(last_run), "samples": meta.groupby(["set", "horizon"]).size().unstack().to_dict(),
-            "seconds": round(time.time() - t0, 1), "store": a.store, "store_attrs": dict(g.attrs), **CFG["_meta"]}
-    (OUT / "prepare_meta.json").write_text(json.dumps(info, indent=1, default=str))
-    print(json.dumps({k: info[k] for k in ("grid", "holdout_run", "samples", "seconds")}, indent=1, default=str))
+    win["set"] = np.where(win.split == "val", "val", np.where(win.run == holdout_run, "holdout", "train"))
+    if S.get("train_stride", 1) > 1:
+        win = pd.concat([d.iloc[::S["train_stride"]] if s == "train" else d
+                         for (s, h), d in win.groupby(["set", "horizon"])])
+    win = win.sort_values(["set", "horizon", "last"]).reset_index(drop=True)
+    ts = seqf.t.values
+    first = win["first"].values.astype(np.int64)
+    pos = first[:, None] + np.arange(K)[None, :]
+    tgt = win.target.values.astype(np.int64)
+    dt = (ts[tgt][:, None] - ts[pos]).astype("timedelta64[ns]").astype(np.float64) / 1e9
+    idx = pd.DataFrame({
+        "set": win.set.values, "horizon": win.horizon.values.astype(int), "run": win.run.values.astype(int),
+        "ctx": list(pos2store[pos]), "tgt": pos2store[tgt], "dt_context_s": list(dt),
+        "b0": man.HGLT_OBS.reindex(seqf.frame_id.values[tgt]).values.astype(float),
+        "t_last": seqf.t.values[win["last"].values], "t_target": seqf.t.values[tgt],
+        "dt_target_s": dt[:, -1], "target_frame": seqf.frame_id.values[tgt]})
+    assert np.isfinite(idx.b0).all(), "B0 missing for a target frame"
+    atomic.to_parquet(idx, out / f"samples_{G}.parquet")
+    atomic.save_npy(out / f"mu_{G}.npy", mu.astype(np.float32))
+    tr = np.load(paths.phase2("noise_maps", f"noise_maps_{name}_train_g2_resp.npz"))["trusted"]
+    sel = (np.arange(G) * tr.shape[0] / G).astype(int)
+    atomic.save_npy(out / f"trusted_{G}.npy", tr[np.ix_(sel, sel)])
+    counts = idx.groupby(["set", "horizon"]).size().unstack().fillna(0).astype(int)
+    info = {"grid": G, "r_ref": r_ref, "context": K, "horizons": S["horizons"], "holdout_run": int(holdout_run),
+            "samples": {str(h): counts[h].to_dict() for h in counts.columns}, "store": name,
+            "frames_sha256": hashlib.sha256(frames.tobytes()).hexdigest(),
+            "frames_gb": round(frames.nbytes / 1e9, 3), "seconds": round(time.time() - t0, 1),
+            "store_attrs": dict(g.attrs), **CFG["_meta"], **P3["_meta"]}
+    atomic.write_json(out / "prepare_meta.json", info)
+    print(counts.to_string())
+    print(f"done in {time.time() - t0:.0f} s; frame cache {info['frames_gb']} GB")
 
 
 if __name__ == "__main__":

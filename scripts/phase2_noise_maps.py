@@ -26,12 +26,12 @@ import pandas as pd  # noqa: E402
 import zarr  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import baselines, config, normalize, progress, response  # noqa: E402
+from suitdyn import baselines, config, normalize, paths, progress, response  # noqa: E402
 
-CFG = config.load_phase2()
-SEQ = config.seq_dir()
-STORES = config.ROOT / "outputs" / "phase2" / "stores"
-OUT = config.ROOT / "outputs" / "phase2" / "noise_maps"
+CFG = config.load_dataset()
+SEQ = paths.sequences()
+STORES = paths.stores()
+OUT = paths.phase2("noise_maps")
 
 
 def load(g, i, f):
@@ -60,7 +60,7 @@ def main():
     win = win[(win.split == a.split) & (win.horizon == 1) & (win.context == 1)]
     seqf = pd.read_parquet(SEQ / "frames.parquet")
     s_of = pd.Series(fr.store_index.values, index=fr.frame_id)
-    man = pd.read_parquet(config.out_dir(CFG) / "manifest.parquet", columns=["file", "HGLT_OBS"]).set_index("file")
+    man = pd.read_parquet(paths.archive("manifest.parquet"), columns=["file", "HGLT_OBS"]).set_index("file")
     grid = g["nb03/image"].shape[1] // a.grid_factor
     mu = normalize.mu_map(grid, r_ref)
     disk = mu > np.sqrt(1 - 0.95 ** 2)

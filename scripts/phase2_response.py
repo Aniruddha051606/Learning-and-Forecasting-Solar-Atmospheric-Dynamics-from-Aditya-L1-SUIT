@@ -20,12 +20,12 @@ import pandas as pd
 import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config, normalize, response  # noqa: E402
+from suitdyn import config, normalize, paths, response  # noqa: E402
 
-CFG = config.load_phase2()
-STORES = config.ROOT / "outputs" / "phase2" / "stores"
-NM = config.ROOT / "outputs" / "phase2" / "noise_maps"
-OUT = config.ROOT / "outputs" / "phase2" / "response"
+CFG = config.load_dataset()
+STORES = paths.stores()
+NM = paths.phase2("noise_maps")
+OUT = paths.phase2("response")
 
 
 def level_r2(g, fr, model, split, factor_grid=2, every=1):

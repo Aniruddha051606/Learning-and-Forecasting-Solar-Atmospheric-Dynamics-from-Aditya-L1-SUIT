@@ -1,0 +1,73 @@
+# Phase 3: learning. Read by every phase3 script through suitdyn.config.load_phase3(). Nothing about the
+# learning stage is hard-coded in the scripts; changing a value here changes the pipeline fingerprint of
+# every stage that reads it (suitdyn/pipeline.py), so the affected stages rerun.
+
+[samples]
+# Frames are block-averaged from the 1536 store grid by this factor (4 -> 384 x 384, 5.6"/px).
+grid_factor = 4
+# Context frames per sample, and forecast horizons in frames (87 s cadence: 28 min, 57 min, 1.9 h, 3.8 h).
+context = 5
+horizons = [20, 40, 80, 160]
+# The last training run is kept out of training: early stopping and every tuned baseline use it, so the
+# validation split stays a clean reporting set.
+holdout = "last_train_run"
+# Every window is a sample (samples are assembled on the fly from the frame cache, so there is no disk
+# cost for using all of them).
+train_stride = 1
+
+[background]
+# Static background S (scripts/phase3_background.py): derotation must not move what is fixed on the grid.
+# Gradient-penalty values scanned on the hold-out run (fit on train pairs only), then S is refit on
+# train + hold-out with the chosen value.
+lambdas = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
+residual_clip = 0.25
+rho_max = 0.95
+# lambda is scored inside this radius: in the outer ring (0.9-0.95) S is poorly constrained (foreshortening,
+# rotation sources off the disk; tests/test_ml_data_background.py), so it must not drive the choice.
+score_rho_max = 0.9
+
+[model]
+# Model zoo: suitdyn/ml/models.py. Every model predicts the residual over its B1 (plain or background-aware).
+types = ["unet", "convlstm"]
+unet_base = 16
+convlstm_hidden = 32
+
+[train]
+inputs = "bg"             # "plain": derotate whole frames; "bg": rot(F - S) + S (background-aware B1)
+seeds = [0, 1, 2]
+epochs = 30
+patience = 6
+batch = 8
+lr = 3.0e-4
+weight_decay = 1.0e-4
+grad_clip = 1.0
+bf16 = true
+# Samples drawn per epoch (fraction of the training set; 1.0 = all), reshuffled every epoch.
+epoch_fraction = 1.0
+
+[thermal]
+# Duty-cycle controller (scripts/phase3_train.py, class Thermal). This laptop sustains ~6-10 % GPU duty.
+target_c = 75.0
+max_c = 85.0
+resume_c = 72.0
+
+[eval]
+# Regions: disk (r < 0.95), trusted (Phase 2 trusted region), plage. Plage is defined from the forecast
+# side and relative to the local large-scale level, so the offset-mode vignetting does not bias it:
+# pixel / Gaussian(pixel, plage_sigma_px) > plage_contrast.
+plage_sigma_px = 8.0
+# Every region is limited to rho < disk_rho_max: the limb ring is unreliable for every derotation-based
+# forecast (foreshortening, sources off the disk, S poorly constrained), and a model must not earn skill there.
+disk_rho_max = 0.9
+plage_contrast = 1.25
+bootstrap = 2000
+# Baselines a model must beat; its skill is reported against the strongest per region and horizon.
+baselines = ["B1", "B1-avg", "B1-avg-LDadd", "B1-avg-bgS", "B1-avg-clim"]
+
+[controls]
+# Negative controls (scripts/phase3_evaluate.py). A model that shows skill here has learned an artefact.
+#   shuffle:  context frames from another time (same horizon, same split): skill must vanish
+#   frozen:   target = the last context frame derotated to the target time plus real frame-to-frame
+#             noise, i.e. a Sun with no evolution: skill over B1 must be ~0
+enabled = ["shuffle", "frozen"]
+samples = 400

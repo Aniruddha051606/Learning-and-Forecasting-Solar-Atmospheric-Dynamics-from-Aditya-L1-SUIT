@@ -1,44 +1,66 @@
+"""Configuration: settings files, the current data set, and provenance recorded with every output.
+
+  configs/phase1.toml            archive paths, limb fit, QC, calibration and registration settings
+  configs/datasets/<name>.toml   one data set: pointing mode, exclusions, time splits, windows
+  configs/phase3.toml            the learning stage: samples, models, training, evaluation, controls
+
+The current data set is the environment variable SUITDYN_DATASET (default v0). Where its products
+live is suitdyn/paths.py.
+"""
 import hashlib
 import os
 import subprocess
 import tomllib
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent.parent
-# Which data set the Phase 2/3 scripts work on (environment variable SUITDYN_DATASET, default v0).
-# v0 keeps its original paths; another name <n> uses configs/phase2_<n>.toml, outputs/phase2/sequences_<n>,
-# the store <n>, and outputs/phase3_<n>/, so data sets never overwrite each other.
 DATASET = os.environ.get("SUITDYN_DATASET", "v0")
 
 
-def load(path="configs/phase1.toml"):
+def _read(path):
     p = ROOT / path
     raw = p.read_bytes()
-    cfg = tomllib.loads(raw.decode())
-    cfg["_meta"] = {"config_path": str(p), "config_sha256": hashlib.sha256(raw).hexdigest(), "git": git_state()}
+    return tomllib.loads(raw.decode()), p, hashlib.sha256(raw).hexdigest()
+
+
+def load(path="configs/phase1.toml"):
+    cfg, p, sha = _read(path)
+    cfg["_meta"] = {"config_path": str(p), "config_sha256": sha, "git": git_state()}
     return cfg
 
 
-def load_phase2():
-    """Phase 1 settings (paths, limb, qc, register) plus configs/phase2.toml, with both hashes recorded."""
+def dataset_config_path(name=None):
+    return ROOT / "configs" / "datasets" / f"{name or DATASET}.toml"
+
+
+def load_dataset(name=None):
+    """Phase 1 settings plus the data set's settings, with both hashes recorded."""
+    name = name or DATASET
     cfg = load()
-    p = ROOT / ("configs/phase2.toml" if DATASET == "v0" else f"configs/phase2_{DATASET}.toml")
-    raw = p.read_bytes()
-    cfg.update(tomllib.loads(raw.decode()))
-    cfg["_meta"]["phase2_config_sha256"] = hashlib.sha256(raw).hexdigest()
-    cfg["_meta"]["phase2_config_path"] = str(p)
-    cfg["_meta"]["dataset"] = DATASET
+    ds, p, sha = _read(dataset_config_path(name).relative_to(ROOT))
+    cfg.update(ds)
+    cfg["_meta"].update(dataset=name, dataset_config_path=str(p), dataset_config_sha256=sha)
     return cfg
 
 
-def seq_dir():
-    """Frame list, splits and windows of the current data set."""
-    return ROOT / "outputs" / "phase2" / ("sequences" if DATASET == "v0" else f"sequences_{DATASET}")
+load_phase2 = load_dataset  # earlier name
 
 
-def phase3_dir(*parts):
-    """Phase 3 products of the current data set (cache, runs, diagnostics, background)."""
-    return ROOT / "outputs" / ("phase3" if DATASET == "v0" else f"phase3_{DATASET}") / Path(*parts)
+def load_phase3():
+    cfg, p, sha = _read("configs/phase3.toml")
+    cfg["_meta"] = {"phase3_config_path": str(p), "phase3_config_sha256": sha}
+    return cfg
+
+
+def dataset_span(cfg, margin_h=None):
+    """Time span of a data set (earliest split start, latest split end), widened by a margin so that
+    registration smoothing and QC statistics near the edges see their neighbours."""
+    margin = pd.Timedelta(hours=cfg.get("scope", {}).get("margin_h", 3) if margin_h is None else margin_h)
+    starts = [pd.Timestamp(v[0]) for v in cfg["split"].values()]
+    ends = [pd.Timestamp(v[1]) for v in cfg["split"].values()]
+    return min(starts) - margin, max(ends) + margin
 
 
 def git_state():
@@ -52,7 +74,18 @@ def git_state():
     return {"commit": commit or None, "dirty": dirty}
 
 
+# ---- earlier helpers, now thin wrappers over suitdyn/paths.py ----------------------------------------
 def out_dir(cfg, *parts):
-    d = ROOT / cfg["paths"]["out"] / Path(*parts)
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """The frame-local archive folder (manifest, per-frame measurements)."""
+    from . import paths
+    return paths.archive(*parts)
+
+
+def seq_dir():
+    from . import paths
+    return paths.sequences()
+
+
+def phase3_dir(*parts):
+    from . import paths
+    return paths.phase3(*parts)

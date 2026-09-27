@@ -34,11 +34,16 @@ import pandas as pd  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from concurrent.futures import ProcessPoolExecutor  # noqa: E402
 
-from suitdyn import config, geometry, io, motion, register, solar  # noqa: E402
+from suitdyn import atomic, config, geometry, io, motion, paths, register, solar  # noqa: E402
 
-CFG = config.load()
-OUT = config.out_dir(CFG)
-FIG = config.out_dir(CFG, "registration")
+# Data-set scoped (suitdyn/paths.py): only frames inside the data set's time span (configs/datasets/<name>.toml,
+# widened by [scope] margin_h) are registered, and the fixed pattern for motion and the robust QC statistics
+# come from those frames alone. Registering a larger archive changed earlier results (PHASE3 4c: up to
+# 0.8/1.3 px, 13 new limb outliers), so a data set must never depend on frames outside it.
+CFG = config.load_dataset()
+ARC = paths.archive()
+OUT = paths.phase1()
+FIG = paths.phase1("figures")
 R = CFG["register"]
 RUN_GAP_S = 300
 JUMP_PX = 1.0
@@ -136,7 +141,7 @@ def adopt_nb03(nb, fp):
     nb["segment"] = (nb.run.ne(nb.run.shift()) | (nb.jump_px > JUMP_PX)).cumsum()
     nb["pointing_mode"] = pointing_mode(nb.cc_x0, nb.cc_y0, 2048)
     nb["segment"] = (nb.segment.ne(nb.segment.shift()) | nb.pointing_mode.ne(nb.pointing_mode.shift())).cumsum()
-    man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
+    man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
     jobs = []
     for _, g in nb.groupby("segment"):
         ts = (g.t - g.t.iloc[0]).dt.total_seconds().values
@@ -200,7 +205,7 @@ def validate(nb, fp, lags=(1, 10, 40), n_per_lag=20, seed=0):
     detector px) minus predicted rotation must equal the difference of their adopted centres. Lag 1 =
     the jump pair itself. The same pairs score the alternatives: per-frame circle, smoothed circle
     (the method first adopted and then rejected), and the header."""
-    man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
+    man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
     rng = np.random.default_rng(seed)
     rows = []
     for lag in lags:
@@ -301,7 +306,7 @@ def figures(nb, val, fp_info):
 def before_after(nb):
     """A pair ~60 min apart spanning a large pointing excursion: raw difference vs registered and
     rotation-shifted difference."""
-    man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path"]).set_index("file").path
+    man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path"]).set_index("file").path
     best, pair = -1, None
     for _, g in nb.groupby("segment"):
         if len(g) > 45:
@@ -331,19 +336,21 @@ def before_after(nb):
 
 
 def main():
-    fr = pd.read_parquet(OUT / "frames_full.parquet")
-    fr = fr[fr.limb_R.notna()].copy()
+    fr = pd.read_parquet(ARC / "frames_full.parquet")
+    t_lo, t_hi = config.dataset_span(CFG)
+    fr = fr[fr.limb_R.notna() & (fr.t >= t_lo) & (fr.t <= t_hi)].copy()
+    print(f"data set {config.DATASET}: {len(fr)} full-disk frames in {t_lo} .. {t_hi}", flush=True)
     parts = []
     for kind, g in fr.groupby("frame"):
         rays = common_rays(g)
         parts.append(g.join(circle_fits(g, rays)).assign(common_rays=int(rays.sum())))
     fr = pd.concat(parts)
-    man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path"]).set_index("file").path
+    man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path"]).set_index("file").path
     nbf = fr[fr.frame == "full_binned"].sort_values("t")
     pick = nbf.file.iloc[np.linspace(0, len(nbf) - 1, min(FP_FRAMES, len(nbf))).astype(int)]
     fp_info = motion.fixed_pattern([io.read(man[f])[0] for f in pick])
     fp = fp_info[0]
-    np.save(OUT / "fixed_pattern_nb03_box.npy", fp)
+    atomic.save_npy(OUT / "fixed_pattern_nb03_box.npy", fp)
 
     nb = adopt_nb03(nbf, fp)
     full = adopt_full(fr[fr.frame == "full"], nb)
@@ -376,7 +383,7 @@ def main():
             "filter_offset_y", "z_spike", "z_limb", "z_bright", "qc_usable", "qc_reasons"]
     reg = reg.reindex(columns=keep)
     reg["grid"], reg["r_ref"] = R["grid"], R["r_ref"]
-    reg.to_parquet(OUT / "registration.parquet", index=False)
+    atomic.to_parquet(reg, OUT / "registration.parquet")
     val.to_csv(OUT / "registration_validation.csv", index=False)
 
     def vstat(name, sub=val):
@@ -415,7 +422,7 @@ def main():
                "flag_counts": reg.qc_reasons.str.split(";").explode().replace("", np.nan).dropna().value_counts().to_dict()},
         **CFG["_meta"],
     }
-    (OUT / "registration_summary.json").write_text(json.dumps(summary, indent=1, default=float))
+    atomic.write_text(OUT / "registration_summary.json", json.dumps(summary, indent=1, default=float))
     print(json.dumps({k: summary[k] for k in ("fixed_pattern", "nb03", "validation", "qc")}, indent=1, default=float))
 
 

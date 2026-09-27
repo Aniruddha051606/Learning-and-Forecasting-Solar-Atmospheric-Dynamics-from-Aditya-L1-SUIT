@@ -21,12 +21,12 @@ import zarr
 from zarr.codecs import BloscCodec
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config, progress, store  # noqa: E402
+from suitdyn import atomic, config, paths, progress, store  # noqa: E402
 
-CFG = config.load_phase2()
-P1 = config.out_dir(CFG)
-SEQ = config.seq_dir()
-STORES = config.ROOT / "outputs" / "phase2" / "stores"
+CFG = config.load_dataset()
+P1 = paths.archive()  # manifest
+SEQ = paths.sequences()
+STORES = paths.stores()
 _PATTERN = None
 _RESP = None
 
@@ -51,8 +51,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default=config.DATASET)
     ap.add_argument("--grid", type=int, default=CFG["register"]["grid"])
-    ap.add_argument("--pattern", default=str(P1 / "calibration" / "nb03_pattern_adopted.npy"),
-                    help="pattern file, or 'none'; the default is the one adopted by phase2_calibration_followup.py")
+    ap.add_argument("--pattern", default=str(paths.calibration("nb03_pattern.npy")),
+                    help="pattern file, or 'none'; default: this data set's calibration (scripts/calibrate_pattern.py)")
     ap.add_argument("--pattern-mode", default="",
                     help="additive / multiplicative; default: read from the pattern's .json provenance")
     ap.add_argument("--splits", default="train,val,test")
@@ -100,8 +100,7 @@ def main():
                         "log_response_sha256": store.file_sha256(a.response_map) if a.response_map else None},
         "manifest_sha256": meta1.get("manifest_sha256"), "test_seal_sha256": seal["sha256"],
         "frames": T, "splits": a.splits}))
-    rows.drop(columns=["path"]).assign(store_index=np.arange(T)).to_parquet(STORES / f"{a.name}.frames.parquet",
-                                                                           index=False)
+    atomic.to_parquet(rows.drop(columns=["path"]).assign(store_index=np.arange(T)), STORES / f"{a.name}.frames.parquet")
     jobs = [(i, r.to_dict(), zpath, a.grid, r_ref, a.pattern_mode) for i, r in rows.iterrows() if i not in done]
     t0 = time.time()
     with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init, initargs=(pattern, a.response_map or None)) as ex:
@@ -113,7 +112,7 @@ def main():
     size = sum(p.stat().st_size for p in Path(zpath).rglob("*") if p.is_file())
     summary = {"store": zpath, "frames": T, "written_now": len(jobs), "gigabytes": round(size / 1e9, 2),
                "seconds": round(time.time() - t0, 1), **dict(g.attrs)}
-    (STORES / f"{a.name}.summary.json").write_text(json.dumps(summary, indent=1, default=str))
+    atomic.write_json(STORES / f"{a.name}.summary.json", summary)
     print(json.dumps({k: summary[k] for k in ("store", "frames", "written_now", "gigabytes", "seconds")}, indent=1))
 
 

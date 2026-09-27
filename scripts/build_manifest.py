@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd  # noqa: E402
 
-from suitdyn import config, manifest  # noqa: E402
+from suitdyn import atomic, config, manifest  # noqa: E402
 
 
 def main():
@@ -47,7 +47,7 @@ def main():
         n_local = len(extra)
         df = pd.concat([df, extra[[c for c in extra.columns if c in df.columns]]], ignore_index=True)
         df = df.sort_values("t", na_position="last").reset_index(drop=True)
-    df.to_parquet(out / "manifest.parquet", index=False)
+    atomic.to_parquet(df, out / "manifest.parquet")
     meta = {"files": len(df), "read_errors": int(df.read_error.notna().sum()),
             "filter_name_mismatches": int((~df.filter_name_matches_header.fillna(True)).sum()),
             "gigabytes": round(df.bytes.sum() / 1e9, 3), "span": [str(df.t.min()), str(df.t.max())],
@@ -56,7 +56,7 @@ def main():
             # identifies the exact set of raw files: the dataset version everything downstream refers to
             "manifest_sha256": hashlib.sha256("\n".join(sorted(df.sha256.dropna())).encode()).hexdigest(),
             "seconds": round(time.time() - t0, 1), **cfg["_meta"]}
-    (out / "manifest_meta.json").write_text(json.dumps(meta, indent=1))
+    atomic.write_json(out / "manifest_meta.json", meta)
     print(json.dumps(meta, indent=1))
 
 

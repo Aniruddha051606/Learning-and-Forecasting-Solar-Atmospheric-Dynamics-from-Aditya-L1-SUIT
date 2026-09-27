@@ -23,7 +23,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter, median_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config, geometry, io, progress, qc  # noqa: E402
+from suitdyn import atomic, config, geometry, io, progress, qc  # noqa: E402
 
 CFG = config.load()
 MAX_PAIR_DT_S = 300
@@ -210,14 +210,14 @@ def main():
     frames = pd.concat([d for d in (old_full, new) if d is not None and len(d)], ignore_index=True).sort_values("t")
     roi_df = pd.concat([d for d in (old_roi, new_roi) if d is not None and len(d)], ignore_index=True).sort_values("t")
     seams = pd.concat([d for d in (old_seams, seams) if d is not None and len(d)], ignore_index=True)
-    frames.to_parquet(out / "frames_full.parquet", index=False)
-    roi_df.to_parquet(out / "frames_roi.parquet", index=False)
-    seams.to_parquet(out / "seam_profiles.parquet", index=False)
+    atomic.to_parquet(frames, out / "frames_full.parquet")
+    atomic.to_parquet(roi_df, out / "frames_roi.parquet")
+    atomic.to_parquet(seams, out / "seam_profiles.parquet")
     meta = {"full_frames": len(frames), "roi_frames": len(roi_df), "processed_now": [len(jobs), len(roi_todo)],
             "full_errors": int(frames.get("error", pd.Series(dtype=object)).notna().sum()),
             "roi_errors": int(roi_df.get("error", pd.Series(dtype=object)).notna().sum()),
             "proc_sig": sig, "seconds": round(time.time() - t0, 1), "manifest_rows": len(man), **CFG["_meta"]}
-    (out / "process_meta.json").write_text(json.dumps(meta, indent=1))
+    atomic.write_json(out / "process_meta.json", meta)
     print(json.dumps(meta, indent=1))
     if meta["full_errors"]:
         print(frames.loc[frames.error.notna(), ["file", "error"]].head(5).to_string())

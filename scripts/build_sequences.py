@@ -1,15 +1,24 @@
 """Phase 2: data-set frame list, splits, window index, test seal, burst snapshots.
 
-    python scripts/build_sequences.py
+    python scripts/build_sequences.py [--reseal]
 
-Reads outputs/phase1/{manifest,registration,frames_full}.parquet; writes outputs/phase2/sequences/:
+Reads the archive manifest and the data set's registration (outputs/datasets/<name>/phase1); writes
+outputs/datasets/<name>/sequences/:
   frames.parquet     NB03 frames in the data set (one row each: frame_id, t, split, run, flags)
   excluded.parquet   NB03 frames left out, with the reason
   windows.parquet    every (context, horizon) window, all splits
   bursts.parquet     multi-filter snapshots, every filter listed, missing ones explicit
   test_seal.json     hash of the test frame list (reading test windows needs an explicit unseal)
   summary.json       counts per split / horizon, independent-hours estimate, provenance
+
+The test seal is never silently replaced. If a rebuild gives the same test frames, the existing seal (with
+its log of every unseal) is kept as it is. If the test frames changed (for example files for those dates
+arrived later), the build stops unless --reseal is given; the old seal is then kept as
+test_seal_superseded_<time>.json.
 """
+import argparse
+import hashlib
+import time
 import json
 import sys
 from pathlib import Path
@@ -18,18 +27,36 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config, sequences  # noqa: E402
+from suitdyn import atomic, config, paths, sequences  # noqa: E402
 
-CFG = config.load_phase2()
-P1 = config.out_dir(CFG)
-OUT = config.seq_dir()
-OUT.mkdir(parents=True, exist_ok=True)
+CFG = config.load_dataset()
+ARC = paths.archive()
+P1 = paths.phase1()
+OUT = paths.sequences()
+
+
+def seal_test(f, reseal):
+    path = OUT / "test_seal.json"
+    ids = sorted(f.loc[f.split == "test", "frame_id"])
+    new = hashlib.sha256("\n".join(ids).encode()).hexdigest()  # the same hash as suitdyn.sequences.seal
+    if path.exists():
+        old = json.loads(path.read_text())
+        if old.get("sha256") == new:
+            return new  # unchanged: keep the file and its unseal log
+        if not reseal:
+            sys.exit(f"The test split of data set {config.DATASET} changed ({old.get('test_frames')} -> {len(ids)} "
+                     f"frames). Refusing to replace the seal; rerun with --reseal if this is intended.")
+        path.rename(OUT / f"test_seal_superseded_{time.strftime('%Y%m%dT%H%M%S')}.json")
+    return sequences.seal(f, path)
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reseal", action="store_true", help="accept a changed test split (keeps the old seal)")
+    a = ap.parse_args()
     D, S, Q = CFG["dataset"], CFG["split"], CFG["sequences"]
     reg = pd.read_parquet(P1 / "registration.parquet")
-    man = pd.read_parquet(P1 / "manifest.parquet", columns=["file", "sha256"])
+    man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "sha256"])
     nb = reg[reg.frame == "full_binned"].merge(man, on="file").sort_values("t").reset_index(drop=True)
     nb = nb.rename(columns={"file": "frame_id"})
 
@@ -54,15 +81,15 @@ def main():
     f["run"] = sequences.runs(f.t, Q["max_gap_s"])
     cols = ["frame_id", "sha256", "t", "split", "run", "OBS_MODE", "pointing_mode", "segment", "reg_x0", "reg_y0",
             "reg_R", "CROTA2", "jump_px", "qc_reasons"]
-    f[cols].to_parquet(OUT / "frames.parquet", index=False)
+    seal_hash = seal_test(f, a.reseal)  # before anything is written: a refused reseal leaves the data set as it was
+    atomic.to_parquet(f[cols], OUT / "frames.parquet")
 
     idx = sequences.window_index(f[["frame_id", "t", "split"]], Q["contexts"], Q["horizons"], Q["max_gap_s"])
-    idx.to_parquet(OUT / "windows.parquet", index=False)
-    seal_hash = sequences.seal(f, OUT / "test_seal.json")
+    atomic.to_parquet(idx, OUT / "windows.parquet")
 
     full = reg[(reg.frame == "full") & (reg.pointing_mode == D["pointing_mode"])].rename(columns={"file": "frame_id"})
     bursts = sequences.burst_snapshots(full[["frame_id", "t", "FTR_NAME"]])
-    bursts.to_parquet(OUT / "bursts.parquet", index=False)
+    atomic.to_parquet(bursts, OUT / "bursts.parquet")
 
     counts = idx.groupby(["horizon", "split"]).size().unstack(fill_value=0)
     counts = counts[counts.index.isin(Q["horizons"])]
@@ -80,7 +107,7 @@ def main():
                    "missing_filter_rows": int((~bursts.present).sum())},
         "test_seal_sha256": seal_hash, **CFG["_meta"],
     }
-    (OUT / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
+    atomic.write_json(OUT / "summary.json", summary)
     print(json.dumps(summary, indent=1, default=str))
 
 

@@ -5,11 +5,13 @@
 # Forward slashes: a leading \ is mangled by shells and TOML. The share is read-only for the pipeline.
 archive_root = "//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
 raw_root = "//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
-# The earlier local copy (D:/Data/...) is kept untouched until the share holds every file of data set v0.
+# The earlier local copy (D:/Data/...). Not needed by the pipeline any more; deleting it is the user's decision.
 local_copy_root = "D:/Data/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
-# Manifest of that local copy (checksums), used for files not yet on the share (build_manifest.py).
-local_copy_manifest = "outputs/phase1/manifest_localcopy_2026-09-27.parquet"
-out = "outputs/phase1"
+# Manifest of that local copy, used for files not yet on the share (build_manifest.py). Empty since
+# 2026-09-28: every local-copy file is on the share, byte-identical (0 missing, 0 checksum conflicts).
+local_copy_manifest = ""
+# Output layout: suitdyn/paths.py (outputs/archive, outputs/datasets/<name>, outputs/pipeline/<name>).
+out = "outputs/archive"
 
 [run]
 workers = 6
@@ -45,6 +47,13 @@ core_r = 0.9
 # at r = 0.949 at 8 px vs 0.888 at 16 px and 0.848 at 32 px (phase2_calibration_followup.py C1);
 # larger scales carry solar leakage (active regions that did not move far enough).
 pattern_highpass_px = 8
+# The pattern is ADDITIVE (Phase 2 plage-lever test, docs/PHASE2.md §2); the pipeline's calibration step
+# (scripts/calibrate_pattern.py) estimates it per data set from this many training-split frames.
+pattern_mode = "additive"
+pattern_frames = 320
+# Quality gate: the high-passed patterns of two independent halves of those frames must correlate at least
+# this well on the disk (Phase 2 C1 measured 0.949 between days at 8 px); below it the step fails.
+pattern_min_split_half_r = 0.8
 
 [register]
 # Common grid for every full-disk frame (both pipelines): disk-centred, solar north up.
