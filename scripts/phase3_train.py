@@ -10,7 +10,9 @@ config hashes, data provenance, seed, parameters, optimiser, GPU, timings).
 Robust to the laptop shutting down (it did, 2026-09-27 13:08, under full GPU load):
   * last.pt after every epoch holds model, optimiser, scheduler, RNG states, log and early-stopping
     state; a rerun of the same command resumes from it (a finished run is skipped);
-  * a thermal guard reads the GPU temperature before EVERY batch, training and hold-out evaluation (in-process NVML, ~0.02 ms; nvidia-smi
+  * a duty-cycle thermal controller (class Thermal) holds the GPU near --target-temp (default 75 C) with
+    short sleeps between batches, and pauses at --max-temp (85 C) as a hard stop;
+  * it reads the GPU temperature before EVERY batch, training and hold-out evaluation (in-process NVML, ~0.02 ms; nvidia-smi
     every 5 batches only if NVML is unavailable) and pauses at >= --max-temp until the GPU is back below
     --resume-temp; peak temperature and pause time are logged per epoch. Sampling every 5 batches through
     nvidia-smi overshot an 84 C trip point to 88-94 C (96 C with a second GPU job running): the same
@@ -102,27 +104,61 @@ def gpu_temp():
 
 
 class Thermal:
-    def __init__(self, max_temp, resume_temp):
-        self.max_temp, self.resume_temp = max_temp, resume_temp
-        self.peak, self.paused = 0.0, 0.0
+    """Keeps the GPU near a target temperature with a smooth duty cycle, plus a hard stop.
+
+    On/off pausing alone did not work: every restart after a pause ran the GPU at full power, and the
+    die temperature jumped from below the trip point to 95-96 C before the next reading (the sensor
+    updates more slowly than the die heats). Now, before every batch, the duty fraction d is lowered
+    when the GPU is above `target` and raised slowly below it, and the loop sleeps
+    work_time * (1/d - 1) after each batch, so the GPU runs steadily at part power. `max_temp` remains
+    a hard stop (pause until below `resume_temp`, then halve d). Start low and ramp slowly: a synthetic
+    load test went from 54 C to 90 C within 10 s at d = 0.5, and this laptop held ~72 C at d ~ 0.07."""
+
+    def __init__(self, max_temp, resume_temp, target, d0=0.1, d_min=0.03):
+        self.max_temp, self.resume_temp, self.target = max_temp, resume_temp, target
+        self.d, self.d_min = d0, d_min
+        self.last = None
+        self._zero()
+
+    def _zero(self):
+        self.peak, self.paused, self.slept, self.temps, self.duties = 0.0, 0.0, 0.0, [], []
 
     def check(self):
+        now = time.time()
+        work = 0.0 if self.last is None else now - self.last
         t = gpu_temp()
         if t == t:
             self.peak = max(self.peak, t)
-        if t == t and t >= self.max_temp:
-            torch.cuda.synchronize()
-            t0 = time.time()
-            while True:
-                time.sleep(5)
-                t = gpu_temp()
-                if not (t == t) or t < self.resume_temp:
-                    break
-            self.paused += time.time() - t0
+            self.temps.append(t)
+            if t >= self.max_temp:
+                torch.cuda.synchronize()
+                t0 = time.time()
+                while True:
+                    time.sleep(5)
+                    t = gpu_temp()
+                    if not (t == t) or t < self.resume_temp:
+                        break
+                self.paused += time.time() - t0
+                self.d = max(self.d_min, self.d * 0.5)
+                work = 0.0
+            elif t > self.target + 4:
+                self.d = max(self.d_min, self.d * 0.8)
+            elif t > self.target:
+                self.d = max(self.d_min, self.d * 0.95)
+            elif t < self.target - 2:
+                self.d = min(1.0, self.d * 1.01)
+        self.duties.append(self.d)
+        pause = min(2.0, work * (1 / self.d - 1))
+        if pause > 0:
+            time.sleep(pause)
+            self.slept += pause
+        self.last = time.time()
 
     def reset(self):
-        out = {"gpu_temp_peak": self.peak, "thermal_pause_s": round(self.paused, 1)}
-        self.peak, self.paused = 0.0, 0.0
+        out = {"gpu_temp_peak": self.peak, "gpu_temp_mean": round(float(np.mean(self.temps)), 1) if self.temps else None,
+               "duty_mean": round(float(np.mean(self.duties)), 3) if self.duties else None,
+               "thermal_pause_s": round(self.paused, 1), "throttle_sleep_s": round(self.slept, 1)}
+        self._zero()
         return out
 
 
@@ -160,7 +196,8 @@ def main():
     ap.add_argument("--wd", type=float, default=1e-4)
     ap.add_argument("--patience", type=int, default=6)
     ap.add_argument("--grid", type=int, default=384)
-    ap.add_argument("--max-temp", type=float, default=80.0)
+    ap.add_argument("--target-temp", type=float, default=75.0, help="duty-cycle controller setpoint (C)")
+    ap.add_argument("--max-temp", type=float, default=85.0, help="hard stop (C)")
     ap.add_argument("--resume-temp", type=float, default=72.0)
     a = ap.parse_args()
     random.seed(a.seed)
@@ -180,7 +217,7 @@ def main():
     steps = a.epochs * int(np.ceil(len(tr.idx) / a.batch))
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
     rng = np.random.default_rng(a.seed)
-    thermal = Thermal(a.max_temp, a.resume_temp)
+    thermal = Thermal(a.max_temp, a.resume_temp, a.target_temp)
     b1_holdout = None
     with torch.no_grad():
         # the holdout loss of predicting a zero residual = baseline B1

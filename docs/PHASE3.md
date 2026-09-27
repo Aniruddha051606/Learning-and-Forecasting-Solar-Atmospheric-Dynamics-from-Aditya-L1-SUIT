@@ -193,6 +193,50 @@ is B1-avg-clim or B1-avg-rot-clim.)
     is content-independent.
   - Co-rotation control: does the correction follow the Sun or the detector?
 
+## 4b. Background-aware B1 (first test, 2026-09-27)
+
+- **What the background is.** The offset-mode Level-1 frames carry a large non-solar brightness
+  gradient: at equal μ, east/west ≈ 0.97/0.31 and south/north ≈ 0.54/0.77. In centred mode
+  (22–23 Sep) the disk is nearly symmetric (0.80/0.83). This is the west-edge vignetting of
+  PHASE2 §3. Derotating moves the solar image across it.
+- **The fix.** `scripts/phase3_background.py` solves a static background S on the grid from the
+  derotation residuals of the train pairs.
+  - λ (the gradient penalty) is chosen on the hold-out run; λ = 3 is an interior optimum.
+  - S is then refit on train + hold-out.
+- **The baseline.** B1-avg-bgS = mean_k [rot_k(F_k − S) + S].
+- **The retrained model.** `phase3_prepare_bg.py` builds the samples with that derotation, and one
+  quick UNet test (`--inputs bg`, 7 epochs, best epoch 3) was trained on them.
+
+Validation, every 2nd sample (a code test), skill over B1-avg, whole disk:
+
+| | 28 min | 57 min | 1.9 h | 3.8 h |
+|---|---|---|---|---|
+| B1-avg-bgS (no learning) | 1.0 % | 3.3 % | 9.0 % | **18.3 %** |
+| unet_s0 (plain inputs) | 7.0 | 8.6 | 12.0 | 23.1 |
+| unet_s0_bg (background-aware inputs) | 7.6 | 7.8 | 12.6 | 24.5 |
+| unet_s0_bg vs the strongest static baseline | 2.7 | 3.4 | 3.0 | 7.2 |
+
+- **S generalises from training to validation.** Its hold-out gain (18.5 % at 3.8 h) carries over to
+  validation, where it is the strongest static baseline at 3.8 h.
+- **Retraining on background-aware inputs leaves the models' edge about where it was.** It is 2–7 %
+  on the disk, 1.9–6.1 % in the trusted region and 1.1–7.7 % in plage.
+- **S is still incomplete:**
+  - At 28 min the limb-darkening-only baseline beats it (4.9 % vs 1.0 %): the gradient penalty
+    smooths the steep limb-darkening near the limb.
+  - The background-aware UNet still removes more large-scale error than S (RMS 0.0163 vs 0.0196 at
+    3.8 h).
+  - 21–44 % of its corrections still correlate with the static map M(H).
+
+  Part of the remaining edge may therefore still be background.
+- **Next refinements:** fit S on top of the analytic limb-darkening profile (penalise only the
+  remainder); anchor S to the detector and shift it by each frame's pointing; validate S on
+  centred-mode frames.
+- **Thermal.** Training now uses a duty-cycle controller (`Thermal` in `phase3_train.py`).
+  - On/off pausing let the GPU jump from under 80 °C to 95–96 °C at every restart.
+  - A synthetic full-power test with the CPU idle held 63–69 °C at ~6–8 % duty.
+  - This laptop's cooling sustains only a small fraction of full GPU power, which limits the speed of
+    the final run.
+
 ## 5. Consequences for Phase 2 (corrections)
 
 - **PHASE2 §4.6** says "at hour horizons the evolution B1 misses is large-scale". Part of that
