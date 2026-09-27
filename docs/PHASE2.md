@@ -95,6 +95,13 @@ regions that did not move far enough in one day are clearly visible.
   run.
 - The first full analysis ran out of memory (25 GB) by taking one median over the whole cache. It was
   rewritten as a bounded single pass.
+- The adopted pattern file was first made by an inline command, not by a pipeline script.
+  **Fixed:** `phase2_calibration.py` now only measures (relative pattern, level map, subset
+  estimates); `phase2_calibration_followup.py` makes the decision (plage-lever test) and writes
+  `nb03_pattern_adopted.npy` with provenance. The high-pass scale is a documented setting
+  (`[calibration] pattern_highpass_px = 8`).
+  **Verified:** rerunning both scripts from the cache reproduces the file used by store v0 byte for
+  byte (SHA-256 `92537789…`, maximum difference 0).
 
 ## 3. Seam and large-scale detector response
 
@@ -107,13 +114,40 @@ rows, ~0 near row 1000 and +3 % above.
 The broader point: **the large-scale detector response is strongly non-uniform** (vignetting towards
 the west edge, the seam, and a horizontal feature near detector rows 290–490; see §4.1). All of it is
 fixed on the CCD, while the Sun moves ±10 px. How much it matters for forecasting is measured
-directly by the noise-floor and pointing-sensitivity maps. No large-scale correction is attempted in
-Phase 2.
-- **Handling:** the SEAM mask bits, plus a *trusted region* defined from measured pointing
-  sensitivity. The trusted region never uses the noise floor, which would exclude plage.
-- **Candidate for later:** a self-calibration of the large-scale response. The two pointing modes
-  put the same solar limb-darkening profile at detector positions 480 px apart, which makes the
-  response identifiable.
+directly by the noise-floor and pointing-sensitivity maps (§4.1).
+
+**Self-calibration attempted: a negative result** (`suitdyn/largescale.py`,
+`scripts/phase2_largescale.py`).
+- **Model:** log I_k(x) = r(x) + q(mu) + a_k, fitted on quiet-disk pixels. r is the log response
+  (32-px bilinear splines, separate on each side of the seam), q is a shared limb-darkening profile
+  and a_k is a per-frame level. Robust fit.
+- **Synthetic test:** passed. The response is recovered to 2 % rms and the seam step to 3 %.
+- **Validation on real data**, against measurements the fit never saw:
+
+| Fit on | V1: fitted gradient vs measured pointing sensitivity (val) | Variance explained (x / y) | V2: seam step vs measured |
+|---|---|---|---|
+| training offset frames + centred frames | r = 0.14 / 0.41 | none / 30 % | r = 0.56, rms difference 15 pp |
+| training offset frames only | r = 0.38 / 0.57 | 14 % / 32 % | r = 0.89, rms difference 8 pp |
+
+- **Reading:** combining the two pointing modes, the step meant to make the response identifiable,
+  makes the fit worse. The likely cause is that the model's key assumption (one detector-fixed,
+  multiplicative response for both modes) does not hold. Level-1 over-subtracts scattered light
+  (off-limb −400 counts, ~13 % of the disk level); scattered light moves with the Sun, not the
+  detector, and is additive. Even the offset-only fit explains little of the measured sensitivity.
+- **Not adopted.** The empirical first-order correction (§4.2), estimated directly from the one-frame
+  pointing sensitivity, is better validated and stays. An 8-pp error on a step of up to 28 % is not
+  good enough to correct the seam, so it stays masked.
+
+**Handling in the data set:**
+- SEAM mask bits per frame.
+- The first-order response correction.
+- A *trusted region*: pixels whose pointing sensitivity, measured on the **training** split after
+  the response correction, is below the core median + 3 robust σ. It covers 91.8 % of the disk
+  (`outputs/phase2/noise_maps/noise_maps_v0_train_g2_resp.npz`). It excludes the seam band, the
+  vignetted south-west edge and **parts of the plage belts**: plage streaks along the rotation
+  direction, and its steep gradients amplify residual misregistration. Phase 3 therefore reports
+  metrics on the trusted region, the full valid disk and plage only, not on the trusted region
+  alone.
 
 ## 4. Noise floor, normalisation, baselines
 
@@ -302,13 +336,14 @@ runs and a test split of one. A model result on it is a pipeline check, not a sc
 
 ## 8. Limitations and open items
 
-- **Seam:** masked, not corrected. The mirror test is invalid because of vignetting. A row-dependent
-  correction needs an independent reference, such as the large-scale self-calibration below.
+- **Seam:** masked, not corrected. The mirror test is invalid because of vignetting, and the
+  self-calibration reproduces the step only to 8 pp (§3).
 - **Large-scale response:** only a first-order, pointing-gradient correction. About half the
-  whole-disk modulation remains. The two pointing modes (480 px apart) make a full self-calibration
-  of the large-scale response possible.
-- **The floor's origin:** instrument residuals and fast chromospheric fluctuations are not separated.
-  A temporal-spectrum analysis of the one-step residual, looking for a 3-min peak, would test it.
+  whole-disk modulation remains. The self-calibration failed validation (§3). A model with a
+  Sun-fixed additive scattered-light term, fitted per pointing mode, is the next thing to try; so is
+  asking the instrument team for the Level-1 scatter and flat files.
+- **The floor's origin:** now tested (§4.6b). Much of it is probably chromospheric oscillation
+  (4–5 min). An instrumental periodicity is not fully excluded.
 - **Pattern origin:** additive. The scatter-calibration-file hypothesis is untested without the file.
 - **Pipeline B:** the per-filter fixed patterns and the burst photometric scatter are not calibrated
   yet (18 bursts is too few for a pattern estimate).
@@ -321,13 +356,16 @@ runs and a test split of one. A model result on it is a pipeline check, not a sc
 python scripts/build_manifest.py                   # manifest + dataset hash (incremental)
 python scripts/process_frames.py                   # per-frame limb/QC/artefact measurements (incremental)
 python scripts/registration_study.py               # pointing modes, registration, validation
-python scripts/phase2_calibration.py --reuse-cache # fixed pattern, stability, rotation test
-python scripts/phase2_calibration_followup.py      # scale / additive / offset-run tests → adopted pattern
+python scripts/phase2_calibration.py --reuse-cache # fixed pattern: relative pattern, level, subset estimates
+python scripts/phase2_calibration_followup.py      # scale / additive / offset-run tests -> nb03_pattern_adopted.npy
 python scripts/build_sequences.py                  # data set v0: frames, splits, windows, bursts, test seal
 python scripts/build_store.py --name v0raw --pattern none
-python scripts/build_store.py --name v0 --pattern outputs/phase1/calibration/nb03_pattern_additive_hp8.npy --pattern-mode additive
+python scripts/build_store.py --name v0          # default: the adopted pattern, mode from its provenance
 python scripts/phase2_noise_maps.py --store v0 --split train
 python scripts/phase2_response.py --store v0
+python scripts/phase2_noise_maps.py --store v0 --split train --response outputs/phase2/response/response_v0.npz --tag resp
+python scripts/phase2_floor_origin.py --store v0   # structure function (oscillation test)
+python scripts/phase2_largescale.py [--centred-frames 0]   # self-calibration (diagnostic; not adopted)
 python scripts/phase2_baselines.py --store v0 --split val --no-b2 --variants per_frame_median --response outputs/phase2/response/response_v0.npz --tag resp [--grid-factor 1|2|4]
 python -m pytest tests
 ```

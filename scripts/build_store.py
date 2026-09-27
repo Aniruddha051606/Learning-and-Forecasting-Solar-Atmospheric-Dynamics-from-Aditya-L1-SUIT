@@ -28,17 +28,20 @@ P1 = config.out_dir(CFG)
 SEQ = config.ROOT / "outputs" / "phase2" / "sequences"
 STORES = config.ROOT / "outputs" / "phase2" / "stores"
 _PATTERN = None
+_RESP = None
 
 
-def _init(pattern_path):
-    global _PATTERN
+def _init(pattern_path, response_path=None):
+    global _PATTERN, _RESP
     _PATTERN = np.load(pattern_path) if pattern_path else None
+    _RESP = np.load(response_path) if response_path else None
 
 
 def _write(args):
     i, row, zpath, grid, r_ref, mode = args
     g = zarr.open_group(zpath, mode="r+")
-    img, m = store.process(row, grid, r_ref, CFG["qc"], int(CFG["limb"]["edge_margin_px"]), _PATTERN, mode)
+    img, m = store.process(row, grid, r_ref, CFG["qc"], int(CFG["limb"]["edge_margin_px"]), _PATTERN, mode,
+                           log_response=_RESP)
     g["nb03/image"][i] = img
     g["nb03/mask"][i] = m
     return i
@@ -53,6 +56,7 @@ def main():
     ap.add_argument("--pattern-mode", default="",
                     help="additive / multiplicative; default: read from the pattern's .json provenance")
     ap.add_argument("--splits", default="train,val,test")
+    ap.add_argument("--response-map", default="", help="log large-scale response (phase2_largescale.py) to divide out")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="first N frames only (smoke test)")
     a = ap.parse_args()
@@ -91,14 +95,16 @@ def main():
         "name": a.name, "grid": a.grid, "r_ref": r_ref, "orientation": "solar north up, +x = west",
         "units": f"counts at {store.EXPOSURE_REF_MS:.0f} ms commanded exposure",
         "calibration": {"pattern": pattern, "pattern_mode": a.pattern_mode,
-                        "pattern_sha256": store.file_sha256(pattern) if pattern else None, "seam": "masked (SEAM bit)"},
+                        "pattern_sha256": store.file_sha256(pattern) if pattern else None, "seam": "masked (SEAM bit)",
+                        "log_response": a.response_map or None,
+                        "log_response_sha256": store.file_sha256(a.response_map) if a.response_map else None},
         "manifest_sha256": meta1.get("manifest_sha256"), "test_seal_sha256": seal["sha256"],
         "frames": T, "splits": a.splits}))
     rows.drop(columns=["path"]).assign(store_index=np.arange(T)).to_parquet(STORES / f"{a.name}.frames.parquet",
                                                                            index=False)
     jobs = [(i, r.to_dict(), zpath, a.grid, r_ref, a.pattern_mode) for i, r in rows.iterrows() if i not in done]
     t0 = time.time()
-    with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init, initargs=(pattern,)) as ex:
+    with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init, initargs=(pattern, a.response_map or None)) as ex:
         for k, _ in enumerate(ex.map(_write, jobs, chunksize=2)):
             if k % 200 == 0:
                 print(f"{k}/{len(jobs)} frames, {time.time() - t0:.0f} s", flush=True)

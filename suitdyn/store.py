@@ -20,14 +20,17 @@ from . import flat, geometry, io, qc, register
 EXPOSURE_REF_MS = 300.0
 
 
-def calibrate(im, row, pattern, pattern_mode, seam_fn=None):
+def calibrate(im, row, pattern, pattern_mode, seam_fn=None, log_response=None):
     """Raw frame → calibrated counts at the nominal exposure. Steps are applied in this order and each is
-    optional so the effect of each can be measured: fixed pattern, seam, exposure."""
+    optional so the effect of each can be measured: fixed pattern, seam, large-scale detector response
+    (divide by exp(r), r from suitdyn.largescale, in detector coordinates), exposure."""
     out = im
     if pattern is not None:
         out = flat.correct(out, pattern, pattern_mode)
     if seam_fn is not None:
         out = seam_fn(out)
+    if log_response is not None:
+        out = out / np.exp(np.nan_to_num(log_response, nan=0.0))
     # Commanded exposure, not MEAS_EXP: within runs the NB03 pixel data do not follow MEAS_EXP's ±1 %
     # quantised values (correlation −0.005; dividing by it raises frame-to-frame scatter 0.24 → 0.37 %).
     return out * (EXPOSURE_REF_MS / float(row["CMD_EXPT"]))
@@ -39,12 +42,13 @@ def native_mask(im, row, fit, cfg_qc, edge_px):
     return qc.pixel_mask(im, r, row["clip_lo"], row["clip_hi"], spk, cfg_qc["seam_px"], cfg_qc["seam_halfwidth"], edge_px)
 
 
-def process(row, grid, r_ref, cfg_qc, edge_px, pattern=None, pattern_mode="multiplicative", seam_fn=None):
+def process(row, grid, r_ref, cfg_qc, edge_px, pattern=None, pattern_mode="multiplicative", seam_fn=None,
+            log_response=None):
     """One frame → (registered calibrated image float16, registered mask uint8)."""
     raw, _ = io.read(row["path"])
     fit = {"x0": row["reg_x0"], "y0": row["reg_y0"], "R": row["reg_R"], "harm": []}
     mask = native_mask(raw, row, fit, cfg_qc, edge_px)
-    im = calibrate(raw, row, pattern, pattern_mode, seam_fn)
+    im = calibrate(raw, row, pattern, pattern_mode, seam_fn, log_response)
     im = np.where((mask & (qc.CLIP_LO | qc.CLIP_HI | qc.SPIKE)) > 0, np.nan, im)
     A, b = register.transform(row["reg_x0"], row["reg_y0"], row["reg_R"], row["CROTA2"], grid, r_ref)
     reg = register.apply(np.nan_to_num(im, nan=0.0), A, b, grid)
