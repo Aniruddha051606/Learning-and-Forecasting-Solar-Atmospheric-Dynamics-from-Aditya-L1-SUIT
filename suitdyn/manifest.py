@@ -71,16 +71,22 @@ def build(raw_root, workers=8, previous=None, settle_s=120.0):
     reuse = {}
     if previous is not None and "mtime_ns" in previous:
         ok = previous["read_error"].isna()
-        reuse = {(r.path, r.bytes, r.mtime_ns): r for r in previous[ok].itertuples(index=False)}
+        # records, not itertuples: itertuples renames columns that are not identifiers ("DATE-OBS"),
+        # which silently dropped them from reused rows (found 2026-09-27, 11,837 rows without a time)
+        reuse = {(r["path"], r["bytes"], r["mtime_ns"]): r for r in previous[ok].to_dict("records")}
     todo, kept = [], []
     for f in files:
         st = f.stat()
         r = reuse.get((str(f), st.st_size, st.st_mtime_ns))
-        (kept if r is not None else todo).append(r._asdict() if r is not None else f)
+        (kept if r is not None else todo).append(r if r is not None else f)
     with ThreadPoolExecutor(workers) as ex:
         rows = list(ex.map(read_row, todo))
     base = ["file", "path", "obsid", "bytes", "mtime_ns", "sha256", "read_error", "header_json"] + COLUMNS
     df = pd.DataFrame([{k: r.get(k) for k in r if k in base or k.startswith("name_")} for r in kept] + rows)
+    if df.empty:  # nothing (complete) to list yet, e.g. every file on the share is still being written
+        df = pd.DataFrame(columns=base + ["t", "frame", "wavelength_nm", "clip_lo", "clip_hi"])
+        df.attrs["reused"], df.attrs["read"] = 0, 0
+        return df
     df.attrs["reused"], df.attrs["read"] = len(kept), len(todo)
     ok = df["read_error"].isna()
     df.loc[ok, "t"] = pd.to_datetime(df.loc[ok, "DATE-OBS"])

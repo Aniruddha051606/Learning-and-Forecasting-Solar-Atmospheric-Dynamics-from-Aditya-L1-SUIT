@@ -7,6 +7,8 @@ archive_root = "//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadDa
 raw_root = "//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
 # The earlier local copy (D:/Data/...) is kept untouched until the share holds every file of data set v0.
 local_copy_root = "D:/Data/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
+# Manifest of that local copy (checksums), used for files not yet on the share (build_manifest.py).
+local_copy_manifest = "outputs/phase1/manifest_localcopy_2026-09-27.parquet"
 out = "outputs/phase1"
 
 [run]
