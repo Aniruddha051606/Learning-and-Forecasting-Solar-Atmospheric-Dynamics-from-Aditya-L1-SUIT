@@ -70,12 +70,16 @@ def nan_blur(a, sigma):
 
 
 def ld_profile(frames, store_idx, mu, n_bins=30):
-    """Quiet-Sun centre-to-limb profile q(mu) of the per-frame-normalised training frames."""
-    edges = np.linspace(mu[mu > 0].min(), 1.0, n_bins + 1)
+    """Centre-to-limb profile q(mu) of the per-frame-normalised training frames: per frame the median of
+    every mu annulus (plage covers a small fraction of an annulus, so the median is the quiet level), then
+    the median over frames. No brightness window: the NB03 profile spans ~0.67-1.30 of the disk median
+    (r < 0.95), and a fixed 0.7-1.3 quiet-Sun window (used before 2026-09-27 16:40) truncated both ends,
+    giving a flattened, non-monotonic profile and a wrong limb-darkening baseline."""
+    edges = np.linspace(np.sqrt(1 - 0.95 ** 2), 1.0, n_bins + 1)
     prof = []
     for i in store_idx:
         f = frames[i].astype(np.float32)
-        ok = np.isfinite(f) & (mu > 0) & (f > 0.7) & (f < 1.3)
+        ok = np.isfinite(f) & (mu > 0)
         b = np.digitize(mu[ok], edges)
         prof.append([np.median(f[ok][b == k]) if (b == k).sum() > 50 else np.nan for k in range(1, n_bins + 1)])
     q = np.nanmedian(np.array(prof), 0)

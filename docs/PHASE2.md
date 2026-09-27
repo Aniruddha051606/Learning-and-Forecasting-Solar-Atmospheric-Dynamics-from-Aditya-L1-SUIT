@@ -325,14 +325,6 @@ wrongly flagged as "fitting noise". A large part of the room between B1 and thes
 taken by plain temporal averaging of the context, so Phase 3 adds that as a baseline (B1-avg) that
 every model must also beat.
 
----|---|---|---|---|---|---|
-| 1536² | 3 % | 7 % | 12 % | 21 % | 32 % | 51 % |
-| 768² | 7 % | 8 % | 16 % | 25 % | 38 % | 56 % |
-| 384² | 9 % | 16 % | 18 % | 30 % | 42 % | 59 % |
-
-These are upper bounds. A model reporting more skill than this over B1 is fitting noise or the
-instrument. Below about 15 min there is almost nothing to gain at the pixel level.
-
 ---
 
 ## 6. Experiment matrix (updated with Phase 2 measurements)
