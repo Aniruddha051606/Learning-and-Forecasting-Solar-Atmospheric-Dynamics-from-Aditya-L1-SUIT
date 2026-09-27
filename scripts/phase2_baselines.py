@@ -32,7 +32,7 @@ import pandas as pd  # noqa: E402
 import zarr  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import baselines, config, metrics, normalize  # noqa: E402
+from suitdyn import baselines, config, metrics, normalize, response  # noqa: E402
 
 CFG = config.load_phase2()
 SEQ = config.ROOT / "outputs" / "phase2" / "sequences"
@@ -50,12 +50,16 @@ def _load(i):
     if f > 1:
         n = img.shape[0] // f
         img = np.nanmean(img[:n * f, :n * f].reshape(n, f, n, f), axis=(1, 3))
+    if _G.get("resp") is not None:
+        x0, y0 = _G["pointing"][i]
+        img = img * response.factor(_G["resp"], img.shape[0], x0, y0)
     return img
 
 
-def _init(store_path, factor, r_ref, level):
+def _init(store_path, factor, r_ref, level, variants, trusted, resp, pointing, no_b2=False):
     g = zarr.open_group(store_path, mode="r")
-    _G.update(image=g["nb03/image"], mask=g["nb03/mask"], factor=factor, r_ref=r_ref, level=level)
+    _G.update(image=g["nb03/image"], mask=g["nb03/mask"], factor=factor, r_ref=r_ref, level=level, variants=variants,
+              trusted=trusted, resp=resp, pointing=pointing, no_b2=no_b2)
 
 
 def _window(job):
@@ -64,15 +68,24 @@ def _window(job):
     prev, last, truth = _load(w["prev"]), _load(w["last"]), _load(w["target"])
     dt, dtp = (t_tgt - t_last).total_seconds(), (t_last - t_prev).total_seconds()
     fc = {"B0": baselines.persistence(last), "B1": baselines.rotated_persistence(last, r_ref, b0, dt)}
-    try:
-        fc["B2"], _ = baselines.optical_flow_extrapolation(prev, last, r_ref, b0, dtp, dt)
-    except Exception:
-        fc["B2"] = np.full_like(last, np.nan)
+    if not _G.get("no_b2"):
+        try:
+            fc["B2"], _ = baselines.optical_flow_extrapolation(prev, last, r_ref, b0, dtp, dt)
+        except Exception:
+            fc["B2"] = np.full_like(last, np.nan)
     grid = last.shape[0]
     mu = normalize.mu_map(grid, r_ref)
     disk = (mu > np.sqrt(1 - 0.9 ** 2)) & np.isfinite(truth)
+    if _G["trusted"] is not None:
+        tr = _G["trusted"]
+        if tr.shape[0] != grid:  # nearest-neighbour resize (both grids share centre and orientation)
+            idx = (np.arange(grid) * tr.shape[0] / grid).astype(int)
+            tr = tr[np.ix_(idx, idx)]
+        disk &= tr
     rows = []
     for vname, fn in normalize.VARIANTS.items():
+        if vname not in _G["variants"]:
+            continue
         kw = {"mu": mu} if vname == "quiet_sun_contrast" else {}
         try:
             tn = fn(truth, disk & np.isfinite(truth), _G["level"], **kw)
@@ -118,6 +131,12 @@ def main():
     ap.add_argument("--per-horizon", type=int, default=120)
     ap.add_argument("--grid-factor", type=int, default=1, help="block-average the grid by this factor")
     ap.add_argument("--context", type=int, default=5)
+    ap.add_argument("--trusted", default="", help="noise_maps npz whose 'trusted' mask restricts scoring")
+    ap.add_argument("--tag", default="", help="suffix for output files")
+    ap.add_argument("--response", default="", help="response model npz (phase2_response.py) to apply")
+    ap.add_argument("--no-b2", action="store_true", help="skip B2 (optical flow); PHASE2 §4 dropped it")
+    ap.add_argument("--variants", default=",".join(normalize.VARIANTS),
+                    help="comma-separated normalisation variants to score (global is always included)")
     a = ap.parse_args()
     t0 = time.time()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -145,12 +164,21 @@ def main():
             t = [seqf.t.iloc[j] for j in (i_prev, i_last, i_tgt)]
             b0 = float(man.loc[seqf.frame_id.iloc[i_last], "HGLT_OBS"])
             jobs.append((ww, t[0], t[1], t[2], b0))
+    variants = sorted(set(a.variants.split(",")) | {"global"})
+    trusted = np.load(a.trusted)["trusted"].astype(bool) if a.trusted else None
+    resp = response.load(a.response) if a.response else None
+    pointing = {int(r.store_index): (float(r.reg_x0), float(r.reg_y0)) for r in fr.itertuples()}
+    rows = []
     with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init,
-                             initargs=(zpath, a.grid_factor, r_ref, level)) as ex:
-        rows = [r for rs in ex.map(_window, jobs, chunksize=2) for r in rs]
+                             initargs=(zpath, a.grid_factor, r_ref, level, variants, trusted, resp, pointing,
+                                       a.no_b2)) as ex:
+        for k, rs in enumerate(ex.map(_window, jobs, chunksize=2)):
+            rows += rs
+            if k % 50 == 0:
+                print(f"{k}/{len(jobs)} windows, {time.time() - t0:.0f} s", flush=True)
     res = pd.DataFrame(rows)
     res["run"] = res["last"].map(fr.set_index("store_index").run)
-    tag = f"{a.store}_{a.split}_g{a.grid_factor}"
+    tag = f"{a.store}_{a.split}_g{a.grid_factor}{('_' + a.tag) if a.tag else ''}"
     res.to_parquet(OUT / f"scores_{tag}.parquet", index=False)
 
     sc = res[res.baseline != "signal"]
@@ -165,8 +193,10 @@ def main():
     # skill of B1 and B2 against B0 on the same windows
     piv = sc.pivot_table(index=["variant", "horizon", "last"], columns="baseline", values="rel_mae").reset_index()
     for b in ("B1", "B2"):
-        piv[f"skill_{b}_vs_B0"] = 1 - piv[b] / piv["B0"]
-    piv["skill_B2_vs_B1"] = 1 - piv["B2"] / piv["B1"]
+        if b in piv:
+            piv[f"skill_{b}_vs_B0"] = 1 - piv[b] / piv["B0"]
+    if "B2" in piv:
+        piv["skill_B2_vs_B1"] = 1 - piv["B2"] / piv["B1"]
     skill = piv.groupby(["variant", "horizon"])[[c for c in piv.columns if c.startswith("skill")]].median()
     sig = res[res.baseline == "signal"].copy()
     sig["d_excess"] = sig.excess_truth - sig.excess_last
@@ -207,7 +237,8 @@ def main():
         if s is not None:
             mins = summ[(summ.variant == v) & (summ.baseline == "B1")].set_index("horizon").minutes
             ax[1].plot(mins.reindex(s.index), s["skill_B1_vs_B0"], "-o", color=c, ms=3, label=f"{v}: B1 vs B0")
-            ax[1].plot(mins.reindex(s.index), s["skill_B2_vs_B1"], "--x", color=c, ms=3, label=f"{v}: B2 vs B1")
+            if "skill_B2_vs_B1" in s:
+                ax[1].plot(mins.reindex(s.index), s["skill_B2_vs_B1"], "--x", color=c, ms=3, label=f"{v}: B2 vs B1")
     ax[1].axhline(0, color="k", lw=.5)
     ax[1].set_xscale("log")
     ax[1].set_xlabel("horizon (min)")

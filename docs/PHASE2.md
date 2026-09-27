@@ -57,11 +57,63 @@ an argument for frame-level normalisation (§4).
 
 ## 2. Fixed-pattern calibration
 
-_(results pending: `scripts/phase2_calibration.py`)_
+**Method** (`suitdyn/flat.py`, `scripts/phase2_calibration.py`, `scripts/phase2_calibration_followup.py`):
+1. Each NB03 frame is divided by a normalised-convolution smoothing of itself (σ = 15 px). The
+   smoothing uses only valid disk pixels and never crosses the quadrant seam, so neither the limb nor
+   the seam step leaks in.
+2. The median of that relative residual is taken per detector pixel over 320 offset-mode frames
+   spread over 2.8 days. Solar structure moves across the detector; a detector pattern does not.
+3. 120 centred-mode frames are kept separately, as a test.
 
-## 3. Seam
+**Results:**
 
-_(pending: `scripts/phase2_seam.py`, run after the pattern correction)_
+| Question | Test | Result |
+|---|---|---|
+| Size | rms of the estimate | 4.7 % of the disk level (143 counts) |
+| Which scales are a detector pattern? | Correlation of independent estimates after high-pass | early vs last day: 0.85 (32 px) → 0.95 (8 px) → 0.98 (2 px); offset vs centred pointing: 0.57 → 0.76 → 0.83 |
+| Multiplicative or additive? | Pixels with plage passing over them (local level ×1.51) vs quiet | absolute amplitude ratio **1.000**, relative **0.686**. Additive predicts 1.0 and 0.663; multiplicative predicts 1.51 and 1.0 → **additive** |
+| Does the correction work? | Plain phase correlation of 149 consecutive offset-mode frames vs expected motion | rms error 1.54 px → **0.053 px**; recovered rotation 0.128 → **0.166** px/frame (predicted 0.167) |
+
+**Adopted:** an additive pattern, high-passed at 8 px (`nb03_pattern_additive_hp8.npy`, rms 105
+counts, provenance in `nb03_pattern_adopted.json`). Only scales where independent days agree at
+r ≥ 0.95 are corrected. Larger scales carry solar leakage: in the centred-mode estimate, active
+regions that did not move far enough in one day are clearly visible.
+
+**Hypotheses:**
+- *Refuted:* the pattern is the imprint of solar network in the 2024 flat field. That predicts a
+  multiplicative pattern, and it is additive.
+- *Open:* Level-1 subtracts a scatter-calibration image (`SCAT_CF` = `NB03_scat_…_2024-06-01`); if
+  that image contains solar network, subtracting it gives exactly an additive, network-shaped
+  pattern. It is untestable without that file.
+
+**Corrections to our own method:**
+- The first multiplicative-vs-additive test regressed bright-frame on dark-frame estimates. That
+  cannot separate the two cases: noise in both estimates flattens both slopes, and both hypotheses
+  predict the same slope ratio. Its "additive" verdict was not evidence, and it was replaced by the
+  plage-lever test above rather than by changing the rule.
+- The first rotation test used a run containing the pointing slew. It was redone on an offset-only
+  run.
+- The first full analysis ran out of memory (25 GB) by taking one median over the whole cache. It was
+  rewritten as a bounded single pass.
+
+## 3. Seam and large-scale detector response
+
+The E–W mirror test (`scripts/phase2_seam.py`) is **invalid** as a seam test. The mirror points west
+of the disk centre lie near the CCD's right edge, which is strongly vignetted (Phase 1: the west limb
+is about 5× dimmer than the east). Mirror ratios of 0.3–0.8 measure that vignetting, not the seam.
+The step across the seam itself is unchanged by the pattern correction: −18 to −28 % in the southern
+rows, ~0 near row 1000 and +3 % above.
+
+The broader point: **the large-scale detector response is strongly non-uniform** (vignetting towards
+the west edge, the seam, and a horizontal feature near detector rows 290–490; see §4.1). All of it is
+fixed on the CCD, while the Sun moves ±10 px. How much it matters for forecasting is measured
+directly by the noise-floor and pointing-sensitivity maps. No large-scale correction is attempted in
+Phase 2.
+- **Handling:** the SEAM mask bits, plus a *trusted region* defined from measured pointing
+  sensitivity. The trusted region never uses the noise floor, which would exclude plage.
+- **Candidate for later:** a self-calibration of the large-scale response. The two pointing modes
+  put the same solar limb-darkening profile at detector positions 480 px apart, which makes the
+  response identifiable.
 
 ## 4. Normalisation experiment and baselines
 

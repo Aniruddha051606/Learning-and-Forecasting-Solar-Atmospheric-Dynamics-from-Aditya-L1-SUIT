@@ -26,7 +26,7 @@ import pandas as pd  # noqa: E402
 import zarr  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import baselines, config, normalize  # noqa: E402
+from suitdyn import baselines, config, normalize, response  # noqa: E402
 
 CFG = config.load_phase2()
 SEQ = config.ROOT / "outputs" / "phase2" / "sequences"
@@ -48,7 +48,10 @@ def main():
     ap.add_argument("--store", default="v0")
     ap.add_argument("--split", default="val", choices=["train", "val"])
     ap.add_argument("--grid-factor", type=int, default=2)
+    ap.add_argument("--response", default="", help="response model npz (phase2_response.py) to apply")
+    ap.add_argument("--tag", default="")
     a = ap.parse_args()
+    resp = response.load(a.response) if a.response else None
     OUT.mkdir(parents=True, exist_ok=True)
     g = zarr.open_group(str(STORES / f"{a.store}.zarr"), mode="r")
     r_ref = float(g.attrs["r_ref"]) / a.grid_factor
@@ -67,6 +70,9 @@ def main():
         a_, b_ = seqf.iloc[w["last"]], seqf.iloc[w.target]
         i, j = s_of[a_.frame_id], s_of[b_.frame_id]
         last, truth = load(g, i, a.grid_factor), load(g, j, a.grid_factor)
+        if resp is not None:
+            last = last * response.factor(resp, last.shape[0], a_.reg_x0, a_.reg_y0)
+            truth = truth * response.factor(resp, truth.shape[0], b_.reg_x0, b_.reg_y0)
         dt = (b_.t - a_.t).total_seconds()
         if coords is None or abs(dt - coords[1]) > 5:
             coords = (baselines.derotation_coords(grid, r_ref, float(man.loc[a_.frame_id, "HGLT_OBS"]), dt), dt)
@@ -106,7 +112,7 @@ def main():
 
     t_floor, t_sens = thresh(floor), thresh(sens)
     trusted = disk & np.isfinite(sens) & (sens <= t_sens)
-    np.savez_compressed(OUT / f"noise_maps_{a.store}_{a.split}_g{a.grid_factor}.npz", floor=floor, slope_x=slope_x,
+    np.savez_compressed(OUT / f"noise_maps_{a.store}_{a.split}_g{a.grid_factor}{('_' + a.tag) if a.tag else ''}.npz", floor=floor, slope_x=slope_x,
                         slope_y=slope_y, trusted=trusted, n=acc["n"])
     frac = float(trusted.sum() / disk.sum())
     summary = {"store": a.store, "split": a.split, "windows": int(len(win)), "grid": grid,
@@ -117,7 +123,7 @@ def main():
                                                    "disk_p95": float(np.nanpercentile(sens[disk], 95))},
                "thresholds": {"floor": float(t_floor), "sensitivity": float(t_sens)},
                "trusted_fraction_of_disk": frac, **CFG["_meta"]}
-    (OUT / f"summary_{a.store}_{a.split}_g{a.grid_factor}.json").write_text(json.dumps(summary, indent=1, default=float))
+    (OUT / f"summary_{a.store}_{a.split}_g{a.grid_factor}{('_' + a.tag) if a.tag else ''}.json").write_text(json.dumps(summary, indent=1, default=float))
     fig, ax = plt.subplots(1, 4, figsize=(24, 6))
     im0 = ax[0].imshow(floor * 100, origin="lower", cmap="magma", vmin=0, vmax=np.nanpercentile(floor[disk] * 100, 99))
     ax[0].set_title("noise floor: mean |B1 error| at 1 frame (% of level)")
@@ -135,7 +141,7 @@ def main():
         x.set_xlabel("registered x (west →)")
     fig.suptitle(f"store {a.store}, {a.split}, {len(win)} one-frame windows; solar north up")
     fig.tight_layout()
-    fig.savefig(OUT / f"noise_maps_{a.store}_{a.split}_g{a.grid_factor}.png", dpi=70)
+    fig.savefig(OUT / f"noise_maps_{a.store}_{a.split}_g{a.grid_factor}{('_' + a.tag) if a.tag else ''}.png", dpi=70)
     plt.close(fig)
     print(json.dumps(summary, indent=1, default=float))
 
