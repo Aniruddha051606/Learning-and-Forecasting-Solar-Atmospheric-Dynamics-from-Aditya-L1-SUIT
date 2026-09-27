@@ -43,13 +43,15 @@ RUNS = config.ROOT / "outputs" / "phase3" / "runs"
 class Data:
     """Memory-mapped samples; batches assembled on the fly (NaN → 0 with an explicit mask)."""
 
-    def __init__(self, G, subset):
+    def __init__(self, G, subset, inputs="plain"):
         meta = pd.read_parquet(CACHE / f"samples_{G}.parquet")
         rows = meta.index[meta.set == subset].values
         # The subset is loaded into RAM once and cleaned once (NaN -> 0 plus a validity mask), so a batch is
         # an index + transfer and the float32 cast happens on the GPU. Reading the memmap and cleaning per
         # batch made an epoch ~3x slower than the GPU work.
-        X = np.asarray(np.load(CACHE / f"X_{G}.npy", mmap_mode="r")[rows])
+        # inputs "bg": context derotated around the static background (scripts/phase3_prepare_bg.py)
+        X = np.asarray(np.load(CACHE / (f"X_{G}.npy" if inputs == "plain" else f"X_{G}_{inputs}.npy"),
+                               mmap_mode="r")[rows])
         Y = np.asarray(np.load(CACHE / f"Y_{G}.npy", mmap_mode="r")[rows])
         self.valid = (np.isfinite(Y) & np.isfinite(X).all(1)).astype(np.uint8)
         self.X = np.nan_to_num(X, copy=False)
@@ -148,6 +150,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", choices=list(models.MODELS), default="unet")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--inputs", choices=["plain", "bg"], default="plain",
+                    help="bg: background-aware derotation; the residual target is then relative to that B1")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -162,12 +166,12 @@ def main():
     torch.manual_seed(a.seed)
     torch.backends.cudnn.benchmark = False
     dev = "cuda"
-    out = RUNS / f"{a.model}_s{a.seed}"
+    out = RUNS / (f"{a.model}_s{a.seed}" + ("" if a.inputs == "plain" else f"_{a.inputs}"))
     out.mkdir(parents=True, exist_ok=True)
     if (out / "run.json").exists():
         print(f"{out.name} already finished; skipping", flush=True)
         return
-    tr, ho = Data(a.grid, "train"), Data(a.grid, "holdout")
+    tr, ho = Data(a.grid, "train", a.inputs), Data(a.grid, "holdout", a.inputs)
     mu = torch.from_numpy(np.load(CACHE / f"mu_{a.grid}.npy"))[None, None].to(dev)
     model = models.MODELS[a.model]().to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
@@ -238,7 +242,9 @@ def main():
            "checkpoint_sha256": hashlib.sha256((out / "best.pt").read_bytes()).hexdigest(),
            "gpu": torch.cuda.get_device_name(0), "torch": torch.__version__,
            "data": {"grid": prep["grid"], "samples": prep["samples"], "store": prep["store"],
-                    "prepare_git": prep.get("git")},
+                    "prepare_git": prep.get("git"), "inputs": a.inputs,
+                    "background": (json.loads((CACHE / "prepare_bg_meta.json").read_text())
+                                   if a.inputs == "bg" else None)},
            "seconds": round(time.time() - t0, 1), **CFG["_meta"]}
     (out / "run.json").write_text(json.dumps(run, indent=1, default=str))
     print(json.dumps({k: run[k] for k in ("model", "seed", "params", "best_epoch", "best_holdout_skill_vs_B1",

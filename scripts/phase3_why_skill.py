@@ -33,6 +33,8 @@ validation split, and then compared with what the models actually do:
           only the limb-darkening profile q(mu) as the static background (separates LD from instrument).
           Multiplicative forms (physically right for LD, I = S q(mu)): B1-avg-LD = mean_k x_k,rot q(mu_tgt)/
           q(mu_src); B1-avg-bgmult = Bg * mean_k rot_k(x_k / Bg).
+          B1-avg-bgS: the same with the static background S solved from derotation residuals of the train +
+          hold-out pairs (scripts/phase3_background.py), when that file exists.
 Model diagnostics on validation (CPU inference, so a training job can keep the GPU):
   * scale decomposition: RMS of the error field below and above a 4-px Gaussian scale (384 grid);
   * effective damping: beta_model = sum (P-L)(A-L) / sum (A-L)^2, P = model forecast, A = B1-avg;
@@ -227,6 +229,7 @@ def main():
     meta = pd.read_parquet(CACHE / f"samples_{G}.parquet").iloc[::a.stride]
     X = np.load(CACHE / f"X_{G}.npy", mmap_mode="r")
     Y = np.load(CACHE / f"Y_{G}.npy", mmap_mode="r")
+    Xbg = np.load(CACHE / f"X_{G}_bg.npy", mmap_mode="r") if (CACHE / f"X_{G}_bg.npy").exists() else None
     frames = np.load(CACHE / f"frames_{G}.npy", mmap_mode="r")
     mu_np = np.load(CACHE / f"mu_{G}.npy")
     trusted = np.load(CACHE / f"trusted_{G}.npy").astype(bool)
@@ -243,6 +246,9 @@ def main():
     qc, qv = ev.ld_profile(frames, tr_store[::10], mu_np)
     qmap = np.where(np.isfinite(Bg), np.interp(mu_np, qc, qv), np.nan).astype(np.float32)
     np.savez_compressed(out_dir / "static_background.npz", Bg=Bg, qmap=qmap, q_mu=qc, q=qv)
+    s_path = config.ROOT / "outputs" / "phase3" / "background" / f"static_bg_{G}.npz"
+    S_bg = np.load(s_path)["S"].astype(np.float32) if s_path.exists() else None
+    print("background S:", s_path if S_bg is not None else "none (run scripts/phase3_background.py)", flush=True)
     ld = ev.LD(qc, qv, r_ref, mu_np)
     print("limb-darkening profile q(mu):", dict(zip(np.round(qc[::5], 2), np.round(qv[::5], 3))), flush=True)
     fitreg = geo.rho < RHO_MAX
@@ -337,6 +343,7 @@ def main():
         Eq = static_shift_error(qmap, row.dt_context_s, r_ref, b0, None, cache0)
         Ald = np.mean([x[k] * ld.factor(b0, dt) for k, dt in enumerate(row.dt_context_s)], 0)
         Abgm = rotated_mean(frames, stores, row.dt_context_s, r_ref, b0, None, cache0, divisor=Bg)
+        Es = static_shift_error(S_bg, row.dt_context_s, r_ref, b0, None, cache0) if S_bg is not None else 0 * A
         dc = damp_choice[h]
         Adamp, L = damp(A, dc["sigma_L"], dc["beta"])
         Arotdamp, _ = damp(Arot, dc["sigma_L"], dc["beta"])
@@ -344,12 +351,17 @@ def main():
                  "B1-avg-clim": A + clim[h], "B1-avg-rot-clim": Arot + clim[h],
                  "B1-avg-bg": A + Ebg, "B1-avg-rot-bg": Arot + Ebg_rot, "B1-avg-LDadd": A + Eq,
                  "B1-avg-LD": Ald, "B1-avg-bgmult": Abgm}
+        if S_bg is not None:
+            preds["B1-avg-bgS"] = A + Es
         with torch.no_grad():
-            xt = torch.from_numpy(np.nan_to_num(x))[None]
-            mt = torch.from_numpy(valid.astype(np.float32))[None, None]
             for name, m in runs:
-                preds[name] = x[-1] + m(xt, mt, mu_t, torch.tensor([h]))[0, 0].numpy()
-        vr = valid & np.isfinite(Arot) & np.isfinite(Ebg_rot) & np.isfinite(Eq) & np.isfinite(Ald) & np.isfinite(Abgm)
+                # runs trained on background-aware inputs (name ends in _bg) get those inputs
+                xin = np.asarray(Xbg[i], dtype=np.float32) if name.endswith("_bg") else x
+                vin = np.isfinite(y) & np.isfinite(xin).all(0)
+                xt = torch.from_numpy(np.nan_to_num(xin))[None]
+                mt = torch.from_numpy(vin.astype(np.float32))[None, None]
+                preds[name] = xin[-1] + m(xt, mt, mu_t, torch.tensor([h]))[0, 0].numpy()
+        vr = valid & np.isfinite(Arot) & np.isfinite(Ebg_rot) & np.isfinite(Eq) & np.isfinite(Ald) & np.isfinite(Abgm)             & np.isfinite(Es)
         regions = {"trusted": vr & trusted, "disk": vr, "plage": vr & (x[-1] > 1.3)}
         rec = {"sample": int(i), "horizon": h, "run": int(row.run), "t_last": row.t_last,
                "minutes": float(row.dt_target_s) / 60}
@@ -377,7 +389,7 @@ def main():
             ps = pair_system(A, r_, fm & (np.abs(r_) < R_CLIP), float(np.mean(row.dt_context_s)), gb)
             if ps is not None:
                 dg[f"rate|{name}"], dg[f"t_col|{name}"], dg[f"t_row|{name}"] = ps["rate"], ps["t_col"], ps["t_row"]
-        for nm, E in (("static-bg", Ebg), ("static-LD", Eq)):
+        for nm, E in (("static-bg", Ebg), ("static-LD", Eq), ("static-S", Es)):
             vs = vsum.setdefault((nm, h), np.zeros((G, G)))
             vs += np.where(vr, np.nan_to_num(E), 0.0)
             vcnt[(nm, h)] = vcnt.get((nm, h), 0) + vr
@@ -402,7 +414,8 @@ def main():
     # ---- summaries ---------------------------------------------------------------------------------------
     methods = [c.split("|")[1] for c in res.columns if c.startswith("disk|")]
     base = ["B1-avg", "B1-avg-rot", "B1-avg-damp", "B1-avg-rot-damp", "B1-avg-clim", "B1-avg-rot-clim",
-            "B1-avg-bg", "B1-avg-rot-bg", "B1-avg-LDadd", "B1-avg-LD", "B1-avg-bgmult"]
+            "B1-avg-bg", "B1-avg-rot-bg", "B1-avg-LDadd", "B1-avg-LD", "B1-avg-bgmult", "B1-avg-bgS"]
+    base = [b for b in base if f"disk|{b}" in res.columns]
     summ = []
     for reg in ("trusted", "disk", "plage"):
         for h, d in res.groupby("horizon"):
@@ -465,7 +478,7 @@ def main():
 
     vmean = {k: np.where(vcnt[k] >= 0.5 * vcnt[k].max(), vsum[k] / np.maximum(vcnt[k], 1), np.nan) for k in vsum}
     np.savez_compressed(out_dir / "val_mean_corrections.npz", **{f"{k[0]}_H{k[1]}": v for k, v in vmean.items()})
-    names = ["truth"] + [r[0] for r in runs] + ["static-bg", "static-LD"]
+    names = ["truth"] + [r[0] for r in runs] + ["static-bg", "static-LD"] + (["static-S"] if S_bg is not None else [])
     hs = sorted(clim)
     map_corr = {}
     fig, ax = plt.subplots(len(hs), 1 + len(names), figsize=(4.2 * (1 + len(names)), 4 * len(hs)))
