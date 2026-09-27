@@ -286,13 +286,29 @@ response correction and per-frame normalisation applied (768², quiet pixels unl
   2. At horizons ≥ 30 min the oscillation is effectively random. Averaging the target over about one
      period (3 frames) should remove it, which is an ablation for Phase 3.
 
-### 4.7 What a forecaster could gain over B1 (pixel level)
+### 4.7 What a forecaster could gain over B1 (pixel level), corrected in Phase 3
 
-Taking the one-frame error as an irreducible floor, the best possible skill over B1 at horizon H is
-(err_B1(H) − floor) / err_B1(H):
+**Correction.** The first version of this section treated the whole one-frame error as irreducible
+and used (err_B1 − floor) / err_B1 as a ceiling (e.g. 18 % at 28 min, 384²). That was wrong. The
+one-frame error |F(t+1) − F(t)| contains the noise (and oscillation) of **both** frames. A
+forecaster cannot remove the target's own noise, but it can remove the noise of its input, for
+example by averaging the context. The irreducible part is therefore about floor / √2 (independent,
+equal noise in the two frames), and the ceiling is 1 − (floor / √2) / err_B1:
 
 | Horizon | 7 min | 14 min | 28 min | 57 min | 1.9 h | 3.8 h |
 |---|---|---|---|---|---|---|
+| 1536² | 32 % | 34 % | 38 % | 44 % | 52 % | 65 % |
+| 768² | 35 % | 35 % | 41 % | 47 % | 56 % | 69 % |
+| 384² | 36 % | 40 % | 42 % | 51 % | 59 % | 71 % |
+
+These are approximate upper bounds. They assume the target's noise is independent of everything a
+model sees and that the oscillation part of the floor is not predictable, which is not guaranteed
+at short horizons (§4.6b). With the first version, a model at ~20 % skill at 28 min would have been
+wrongly flagged as "fitting noise". A large part of the room between B1 and these ceilings can be
+taken by plain temporal averaging of the context, so Phase 3 adds that as a baseline (B1-avg) that
+every model must also beat.
+
+---|---|---|---|---|---|---|
 | 1536² | 3 % | 7 % | 12 % | 21 % | 32 % | 51 % |
 | 768² | 7 % | 8 % | 16 % | 25 % | 38 % | 56 % |
 | 384² | 9 % | 16 % | 18 % | 30 % | 42 % | 59 % |
@@ -310,7 +326,7 @@ instrument. Below about 15 min there is almost nothing to gain at the pixel leve
 | B0 | frame t | t+H | 1–160 fr | persistence | — | rel. MAE | measured §4.5 | — |
 | B1 | frame t | t+H | 1–160 fr | rotation-corrected persistence | — | rel. MAE, SSIM, grad. corr. | measured §4.5–4.6 | — (reference) |
 | ~~B2~~ | — | — | — | optical flow | — | — | — | dropped: worse than B1 at every horizon |
-| A1 | frames t−K..t | t+H | 20, 40, 80, 160 fr | ConvLSTM (small) | masked L1 on B1 residual | skill vs B1 (block CI) | a few % at 1–4 h | CI of skill vs B1 includes 0 at every H, **or** skill above the §4.7 ceiling (leakage / noise fitting) |
+| A1 | frames t−K..t | t+H | 20, 40, 80, 160 fr | ConvLSTM (small) | masked L1 on B1 residual | skill vs B1 **and vs B1-avg** (block CI) | above B1-avg at ≥ 1 horizon | CI of skill vs B1-avg includes 0 at every H, **or** skill above the corrected §4.7 ceiling (leakage) |
 | A2 | same | same | same | CNN/ViT encoder + temporal model | same | same | ≈ A1 at this data size | no gain over A1 → keep the smaller one |
 | M1–M4 | as in PHASE1 §8 | | ≥ 1 h | | | | | M3 needs a burst-to-burst photometric scatter (±1–3 %) below the signal |
 
