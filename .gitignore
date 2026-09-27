@@ -7,3 +7,7 @@ mlruns/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# dashboard build products (rebuilt by dashboard/build_exe.cmd)
+dashboard/build/
+dashboard/dist/
