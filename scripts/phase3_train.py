@@ -10,7 +10,7 @@ config hashes, data provenance, seed, parameters, optimiser, GPU, timings).
 Robust to the laptop shutting down (it did, 2026-09-27 13:08, under full GPU load):
   * last.pt after every epoch holds model, optimiser, scheduler, RNG states, log and early-stopping
     state; a rerun of the same command resumes from it (a finished run is skipped);
-  * a thermal guard reads the GPU temperature before EVERY batch (in-process NVML, ~0.02 ms; nvidia-smi
+  * a thermal guard reads the GPU temperature before EVERY batch, training and hold-out evaluation (in-process NVML, ~0.02 ms; nvidia-smi
     every 5 batches only if NVML is unavailable) and pauses at >= --max-temp until the GPU is back below
     --resume-temp; peak temperature and pause time are logged per epoch. Sampling every 5 batches through
     nvidia-smi overshot an 84 C trip point to 88-94 C (96 C with a second GPU job running): the same
@@ -131,11 +131,13 @@ def masked_l1(pred_res, x, y, m):
     return (torch.abs(pred_res * m - target)).sum() / m.sum().clamp(min=1)
 
 
-def evaluate(model, data, mu, device, bs):
+def evaluate(model, data, mu, device, bs, thermal=None):
     model.eval()
     tot, n = 0.0, 0.0
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
         for s in range(0, len(data.idx), bs):
+            if thermal is not None:  # the hold-out pass is ~40 full-load batches: it overshot to 90 C unchecked
+                thermal.check()
             ids = data.idx[s:s + bs]
             x, y, m, h = data.batch(ids, device)
             r = model(x, m, mu, h).float()
@@ -178,12 +180,13 @@ def main():
     steps = a.epochs * int(np.ceil(len(tr.idx) / a.batch))
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
     rng = np.random.default_rng(a.seed)
+    thermal = Thermal(a.max_temp, a.resume_temp)
     b1_holdout = None
     with torch.no_grad():
         # the holdout loss of predicting a zero residual = baseline B1
         zero = type("Z", (), {"eval": lambda s: None, "train": lambda s: None,
                               "__call__": lambda s, x, m, mu_, h: torch.zeros_like(x[:, -1:])})()
-        b1_holdout = evaluate(zero, ho, mu, dev, 16)
+        b1_holdout = evaluate(zero, ho, mu, dev, 16, thermal)
     log, best, best_ep, bad, start = [], np.inf, -1, 0, 0
     if (out / "last.pt").exists():
         # CPU first: the RNG states must stay CPU ByteTensors; model/optimiser states move to the GPU on load
@@ -196,7 +199,6 @@ def main():
         torch.cuda.set_rng_state(ck["cuda_rng"])
         log, best, best_ep, bad, start = ck["log"], ck["best"], ck["best_ep"], ck["bad"], ck["epoch"] + 1
         print(f"resuming {out.name} at epoch {start}", flush=True)
-    thermal = Thermal(a.max_temp, a.resume_temp)
     t0 = time.time() - (log[-1]["seconds"] if log else 0)
     for ep in range(start, a.epochs):
         if bad >= a.patience:
@@ -217,7 +219,7 @@ def main():
             sched.step()
             tl += float(loss.detach())
             nb += 1
-        hl = evaluate(model, ho, mu, dev, 16)
+        hl = evaluate(model, ho, mu, dev, 16, thermal)
         log.append({"epoch": ep, "train_l1": tl / nb, "holdout_l1": hl, "holdout_skill_vs_B1": 1 - hl / b1_holdout,
                     "seconds": round(time.time() - t0, 1), **thermal.reset()})
         print(json.dumps(log[-1]), flush=True)
