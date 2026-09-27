@@ -1,4 +1,4 @@
-# SUIT-DYN — Phase 2 report (in progress)
+# SUIT-DYN — Phase 2 report
 
 Data: SUIT Level-1, 2026-09-22 03:27 → 2026-09-25 23:30 UT; 23,172 files, 40.9 GB.
 Dataset hash (manifest_sha256): `706c5c3e…`. Everything is produced by the scripts listed at the end.
@@ -115,9 +115,192 @@ Phase 2.
   put the same solar limb-darkening profile at detector positions 480 px apart, which makes the
   response identifiable.
 
-## 4. Normalisation experiment and baselines
+## 4. Noise floor, normalisation, baselines
 
-_(pending: `scripts/phase2_baselines.py` on stores v0raw and v0)_
+### 4.1 Noise floor and where the instrument dominates (`scripts/phase2_noise_maps.py`)
+
+The noise floor is the error of rotation-corrected persistence (B1) one frame ahead (~87 s, where
+the Sun barely changes). The pointing sensitivity is the per-pixel slope of that error against the
+pointing change between the two frames. Both are measured on all one-frame windows, at 768².
+
+| Store / correction | Floor, disk-core median | Floor, p95 | Pointing sensitivity, core | Sensitivity, p95 |
+|---|---|---|---|---|
+| v0raw (no calibration) | 2.80 % | 3.61 % | 0.29 %/px | 0.61 %/px |
+| v0 (fixed pattern corrected) | **1.95 %** | **2.14 %** | 0.17 %/px | 0.35 %/px |
+| v0 + pointing-response correction | 1.94 % | 2.12 % | **0.11 %/px** | **0.24 %/px** |
+
+(validation split, 498 windows; the training split gives the same numbers to ±0.1 %.)
+
+After the pattern correction, the maps show large-scale detector-fixed structure: an east–west
+gradient, bands with sharp edges, and the seam line. At about 0.3 %/px, the ±10 px pointing
+oscillation turns this into up to ±3 % brightness modulation. That is the dominant instrument
+effect at 30–90 min horizons.
+
+### 4.2 Pointing-response correction (`suitdyn/response.py`, `scripts/phase2_response.py`)
+
+In a registered frame I(u) = S(u)·R(u + c), where c is the disk centre on the detector. The one-frame
+error slope against the pointing change equals −∇ln R, so every frame is brought to a reference
+pointing by the factor exp(s·(c − c̄)). The slope maps come **from the training split only**
+(smoothed, σ = 6 px at 768²; reference pointing = training median).
+
+It is judged on the validation split:
+- the per-pixel pointing sensitivity falls by 36 % (table above);
+- whole-disk level vs pointing within runs falls from R² 0.51 / 0.83 (median 0.67) to
+  0.28 / 0.41 (median 0.34).
+
+The correction is real but first order: about half of the level modulation remains. Possible
+reasons are a non-linear or time-varying response, or noise in the smoothed maps.
+
+### 4.3 Normalisation experiment (store v0raw, validation split, 120 windows per horizon, native 1536²)
+
+All variants are scored on the same windows. The forecast is always normalised with statistics of
+the frame it came from, never the truth.
+
+| Variant | B1 relative MAE vs global | Pattern of plage-excess change kept (corr. with global) | Whole-disk level scatter | Verdict |
+|---|---|---|---|---|
+| global | — | 1.00 | 0.19–0.37 % | reference |
+| **per-frame median** | identical (within CI) | **0.98–0.99** | **0.05–0.20 %** | **adopted** |
+| quiet-Sun contrast | +8–10 % | 0.50–0.80 | 0.11–0.20 % | rejected: distorts plage evolution |
+| robust percentile | +50 % | 0.57–0.82 | 0.43–1.1 % | rejected |
+
+The per-frame median removes the whole-disk level jitter (§1.3, and half of §1.4) while keeping the
+spatial pattern of solar change. Any genuine whole-disk NB03 brightening is removed too. It is at
+most a few 0.1 % here and was shown to be largely instrumental, and the trade-off is recorded.
+
+### 4.4 Baselines (store v0raw, global normalisation, validation, native resolution)
+
+| Horizon (measured) | 1.4 min | 7.1 min | 14 min | 28 min | 57 min | 1.9 h | 3.8 h |
+|---|---|---|---|---|---|---|---|
+| B1 relative MAE | 2.83 % | 3.22 % | 3.35 % | 3.45 % | 3.69 % | 3.94 % | 4.81 % |
+| skill B1 vs B0 | 0.01 | 0.05 | 0.08 | 0.17 | 0.32 | 0.47 | 0.51 |
+| skill B2 vs B1 | −0.12 | −0.86 | −1.48 | −2.09 | −2.67 | −3.79 | −4.51 |
+
+(95 % intervals from a bootstrap over run×hour blocks are about ±0.05 percentage points on B1.)
+
+- **Most of the error at every horizon up to ~4 h is the noise floor.** B1 rises only from 2.8 % to
+  4.8 % over 4 h. The part of the target a forecaster could learn beyond B1 is, at pixel level, a
+  small signal on a large floor.
+- **B2 (optical-flow extrapolation) is dropped.** It is worse than B1 at every horizon, even one
+  frame ahead: the estimated flow is dominated by noise and residual pointing jitter. The OpenCV
+  Farneback parameters were not tuned, and that assumption is recorded.
+- **Rotation correction matters more with horizon** (skill over B0: 0.17 at 28 min, 0.5 at 2–4 h).
+
+### 4.5 Effect of calibration on the baselines (same validation windows, native 1536², B1, global)
+
+| Horizon | 1.4 min | 7.1 min | 14 min | 28 min | 57 min | 1.9 h | 3.8 h |
+|---|---|---|---|---|---|---|---|
+| v0raw (uncorrected) | 2.83 % | 3.22 % | 3.35 % | 3.45 % | 3.69 % | 3.94 % | 4.81 % |
+| v0 (fixed pattern) | 1.86 % | 1.96 % | 2.06 % | 2.16 % | 2.52 % | 2.83 % | 3.88 % |
+| **v0 + pointing response** | **1.85 %** | **1.91 %** | **1.99 %** | **2.10 %** | **2.33 %** | **2.74 %** | **3.75 %** |
+| B0 persistence (v0 + resp.) | 1.88 % | 2.06 % | 2.32 % | 2.99 % | 4.39 % | 6.77 % | 9.16 % |
+
+- The fixed-pattern correction removes a third of the error at every horizon. SSIM rises from 0.88 to
+  0.97 and gradient correlation from 0.57 to 0.84: the uncorrected pattern dominated the image edges.
+- The response correction helps where predicted. It has no effect at one frame and the largest
+  effect at about 1 h, where the pointing oscillation acts (2.52 → 2.33 %; the 95 % intervals do not
+  overlap). Its intervals are tighter too, because it removes instrumental variance.
+- Skill of B1 over B0 reaches 0.6 at 2–4 h: rotation is the dominant predictable signal.
+
+### 4.6 Resolution study (v0 + response, B1, global, validation)
+
+| Horizon | 1.4 min | 7.1 min | 14 min | 28 min | 57 min | 1.9 h | 3.8 h | growth 1 fr → 3.8 h |
+|---|---|---|---|---|---|---|---|---|
+| 1536² (1.41″/px) | 1.85 % | 1.91 % | 1.99 % | 2.10 % | 2.33 % | 2.74 % | 3.75 % | 1.90 pp |
+| 768² (2.82″/px) | 1.62 % | 1.75 % | 1.77 % | 1.93 % | 2.16 % | 2.62 % | 3.67 % | 2.05 pp |
+| 384² (5.64″/px) | 1.46 % | 1.61 % | 1.73 % | 1.78 % | 2.10 % | 2.52 % | 3.58 % | 2.12 pp |
+
+- **The noise floor is mostly not pixel noise.** Photon noise would halve with every 2× binning,
+  but the floor falls only 10–12 % per step. It is dominated by spatially correlated terms:
+  registration residuals (≈0.5–1 px), derotation error, residual detector response, and plausibly
+  real fast chromospheric variation. Mg II k shows ~3-min oscillations, and 87 s is about half a
+  period. These cannot be separated yet.
+- **The forecastable change is almost independent of resolution:** B1 grows by about 2 percentage
+  points from one frame to 3.8 h at every resolution. At hour horizons the evolution B1 misses is
+  large-scale.
+- Gradient correlation rises from 0.84 (1536) to 0.96 (768) and 0.98 (384) as noise edges drop out.
+
+### 4.7 What a forecaster could gain over B1 (pixel level)
+
+Taking the one-frame error as an irreducible floor, the best possible skill over B1 at horizon H is
+(err_B1(H) − floor) / err_B1(H):
+
+| Horizon | 7 min | 14 min | 28 min | 57 min | 1.9 h | 3.8 h |
+|---|---|---|---|---|---|---|
+| 1536² | 3 % | 7 % | 12 % | 21 % | 32 % | 51 % |
+| 768² | 7 % | 8 % | 16 % | 25 % | 38 % | 56 % |
+| 384² | 9 % | 16 % | 18 % | 30 % | 42 % | 59 % |
+
+These are upper bounds. A model reporting more skill than this over B1 is fitting noise or the
+instrument. Below about 15 min there is almost nothing to gain at the pixel level.
+
+---
+
+## 6. Experiment matrix (updated with Phase 2 measurements)
+
+| ID | Input | Target | Horizons | Model | Loss | Primary metric | Expected | Failure criterion |
+|---|---|---|---|---|---|---|---|---|
+| N0 | frame t | frame t+1 | 1 fr | — | — | rel. MAE | **1.85 / 1.62 / 1.46 %** (1536/768/384) | — (the floor) |
+| B0 | frame t | t+H | 1–160 fr | persistence | — | rel. MAE | measured §4.5 | — |
+| B1 | frame t | t+H | 1–160 fr | rotation-corrected persistence | — | rel. MAE, SSIM, grad. corr. | measured §4.5–4.6 | — (reference) |
+| ~~B2~~ | — | — | — | optical flow | — | — | — | dropped: worse than B1 at every horizon |
+| A1 | frames t−K..t | t+H | 20, 40, 80, 160 fr | ConvLSTM (small) | masked L1 on B1 residual | skill vs B1 (block CI) | a few % at 1–4 h | CI of skill vs B1 includes 0 at every H, **or** skill above the §4.7 ceiling (leakage / noise fitting) |
+| A2 | same | same | same | CNN/ViT encoder + temporal model | same | same | ≈ A1 at this data size | no gain over A1 → keep the smaller one |
+| M1–M4 | as in PHASE1 §8 | | ≥ 1 h | | | | | M3 needs a burst-to-burst photometric scatter (±1–3 %) below the signal |
+
+The targets are **residuals relative to B1** (the model predicts what rotation-corrected
+persistence misses). Horizons below 20 frames (~30 min) are not model targets, because §4.7 leaves
+too little room above the floor.
+
+## 7. Model recommendation (now data-backed, still prototype-scale)
+
+| Setting | Recommendation | Evidence |
+|---|---|---|
+| Input resolution | **384²** for the first models (5.6″/px); 768² only if a model shows it uses fine scale | Floor lowest and forecastable growth unchanged at 384 (§4.6); the 6 GB GPU |
+| Horizons | **20, 40, 80, 160 frames** (0.5, 1, 2, 4 h), reported separately | §4.7: below ~30 min the ceiling is < 15 % |
+| Target | residual after B1 (F(t+H) − B1(t+H)) on the valid, trusted, response-corrected disk | Rotation is the dominant signal; forcing a model to relearn it wastes capacity and inflates apparent skill |
+| Context | start with K = 5 frames (≈ 7 min), then test 20 | The one-step floor decorrelates quickly; a longer context is an ablation, not a default |
+| Normalisation | per-frame disk median, after pattern and response correction | §4.3 |
+| Model size | ConvLSTM ≈ 1–3 M parameters; encoder + temporal ≤ 10 M | ~35 h of training data across 5 runs (the number of independent hours, not frames, bounds capacity) |
+| Batch / memory | 384², K = 5, batch 8, mixed precision: well within 6 GB | — |
+| Optimiser | AdamW, lr 3e-4 with cosine decay, early stopping on validation skill vs B1 | standard; the test split stays sealed |
+
+Before any of this: this is still 2.8 days of one pointing mode, with a validation split of three
+runs and a test split of one. A model result on it is a pipeline check, not a scientific claim.
+
+## 8. Limitations and open items
+
+- **Seam:** masked, not corrected. The mirror test is invalid because of vignetting. A row-dependent
+  correction needs an independent reference, such as the large-scale self-calibration below.
+- **Large-scale response:** only a first-order, pointing-gradient correction. About half the
+  whole-disk modulation remains. The two pointing modes (480 px apart) make a full self-calibration
+  of the large-scale response possible.
+- **The floor's origin:** instrument residuals and fast chromospheric fluctuations are not separated.
+  A temporal-spectrum analysis of the one-step residual, looking for a 3-min peak, would test it.
+- **Pattern origin:** additive. The scatter-calibration-file hypothesis is untested without the file.
+- **Pipeline B:** the per-filter fixed patterns and the burst photometric scatter are not calibrated
+  yet (18 bursts is too few for a pattern estimate).
+- **Data volume:** the download stopped at 23,172 files. Every result here needs to be repeated on
+  more data before it means anything beyond this prototype.
+
+## 9. Reproduce (from the raw manifest)
+
+```
+python scripts/build_manifest.py                   # manifest + dataset hash (incremental)
+python scripts/process_frames.py                   # per-frame limb/QC/artefact measurements (incremental)
+python scripts/registration_study.py               # pointing modes, registration, validation
+python scripts/phase2_calibration.py --reuse-cache # fixed pattern, stability, rotation test
+python scripts/phase2_calibration_followup.py      # scale / additive / offset-run tests → adopted pattern
+python scripts/build_sequences.py                  # data set v0: frames, splits, windows, bursts, test seal
+python scripts/build_store.py --name v0raw --pattern none
+python scripts/build_store.py --name v0 --pattern outputs/phase1/calibration/nb03_pattern_additive_hp8.npy --pattern-mode additive
+python scripts/phase2_noise_maps.py --store v0 --split train
+python scripts/phase2_response.py --store v0
+python scripts/phase2_baselines.py --store v0 --split val --no-b2 --variants per_frame_median --response outputs/phase2/response/response_v0.npz --tag resp [--grid-factor 1|2|4]
+python -m pytest tests
+```
+
+Long runs were launched detached (Win32_Process Create) so they survive the session ending. Every
+JSON output records the git commit, the dirty flag and the config hashes.
 
 ---
 
