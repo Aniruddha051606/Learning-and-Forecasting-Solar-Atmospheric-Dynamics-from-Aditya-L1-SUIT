@@ -5,6 +5,7 @@ file name and SHA-256, so the exact raw input can be re-downloaded from PRADAN a
 """
 import hashlib
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -60,14 +61,33 @@ def frame_type(df):
     return np.select([roi, binned], ["roi", "full_binned"], "full")
 
 
-def build(raw_root, workers=8, previous=None, settle_s=120.0):
+NAME_TIME = re.compile(r"_(\d{4}-\d{2}-\d{2}T\d{2}\.\d{2}\.\d{2})")
+
+
+def name_time(name):
+    """Observation time from a SUIT file name (..._2026-09-23T17.11.11.780_...), or None."""
+    m = NAME_TIME.search(str(name))
+    return pd.Timestamp(m.group(1).replace(".", ":")) if m else None
+
+
+def build(raw_root, workers=8, previous=None, settle_s=120.0, span=None):
     """Manifest of every *.fits under raw_root. Rows of `previous` (an earlier manifest) are reused for
     files whose path, size and modification time are unchanged, so only new or changed files are read
     and checksummed. Partial downloads (*.fits.part) are never listed, and files modified in the last
     `settle_s` seconds are left for a later run (the archive of record is a share that is still being
     downloaded into). raw_root may be a UNC share written with forward slashes (//host/share/...)."""
+    # span = (t0, t1): only files whose name time is inside it are listed and read; rows of `previous`
+    # outside the span are kept unchanged (the archive grows as data sets need it).
     now = time.time()
-    files = [f for f in sorted(Path(raw_root).rglob("*.fits")) if now - f.stat().st_mtime >= settle_s]
+    files = sorted(Path(raw_root).rglob("*.fits"))
+    outside = None
+    if span is not None:
+        files = [f for f in files if (t := name_time(f.name)) is not None and span[0] <= t <= span[1]]
+        if previous is not None:
+            pt = previous.file.map(name_time)
+            inside = (pt >= span[0]) & (pt <= span[1])
+            outside, previous = previous[~inside], previous[inside]
+    files = [f for f in files if now - f.stat().st_mtime >= settle_s]
     reuse = {}
     if previous is not None and "mtime_ns" in previous:
         ok = previous["read_error"].isna()
@@ -84,6 +104,8 @@ def build(raw_root, workers=8, previous=None, settle_s=120.0):
     base = ["file", "path", "obsid", "bytes", "mtime_ns", "sha256", "read_error", "header_json"] + COLUMNS
     df = pd.DataFrame([{k: r.get(k) for k in r if k in base or k.startswith("name_")} for r in kept] + rows)
     if df.empty:  # nothing (complete) to list yet, e.g. every file on the share is still being written
+        if outside is not None and len(outside):
+            return outside.reset_index(drop=True)  # nothing in the span: the rest of the archive is unchanged
         df = pd.DataFrame(columns=base + ["t", "frame", "wavelength_nm", "clip_lo", "clip_hi"])
         df.attrs["reused"], df.attrs["read"] = 0, 0
         return df
@@ -97,4 +119,6 @@ def build(raw_root, workers=8, previous=None, settle_s=120.0):
     df["clip_lo"] = df["BZERO"] + df["BSCALE"] * -32768
     df["clip_hi"] = df["BZERO"] + df["BSCALE"] * 32767
     df["filter_name_matches_header"] = df["name_filter"] == df["FTR_NAME"]
+    if outside is not None and len(outside):
+        df = pd.concat([df, outside[[c for c in outside.columns if c in df.columns]]], ignore_index=True)
     return df.sort_values("t", na_position="last").reset_index(drop=True)

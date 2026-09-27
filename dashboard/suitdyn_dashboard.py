@@ -44,34 +44,39 @@ STATUS_ICON = {"done": "✔", "running": "▶", "pending": "·", "failed": "✖"
 
 # ------------------------------------------------------------------------------ pipeline reference
 CATALOGUE = [
-    ("Phase 1", "Manifest", "python scripts/build_manifest.py", "headers + SHA-256 of every FITS file on the share"),
-    ("Phase 1", "Per-frame measurements", "python scripts/process_frames.py", "limb fits, QC, seam profiles, image motion"),
-    ("Phase 1", "Registration", "python scripts/registration_study.py", "disk-centred, north-up transforms; frame QC decision"),
-    ("Phase 1", "Exploratory analysis", "python scripts/eda.py", "per-filter audit tables and plots"),
-    ("Phase 2", "Data set", "python scripts/build_sequences.py", "frame list, time splits, windows, sealed test"),
-    ("Phase 2", "Fixed-pattern study", "python scripts/phase2_calibration.py", "detector pattern: stable? additive?"),
-    ("Phase 2", "Adopt pattern", "python scripts/phase2_calibration_followup.py", "scales; writes nb03_pattern_adopted.npy"),
-    ("Phase 2", "Store (Zarr)", "python scripts/build_store.py", "calibrated, registered 1536² frames + QC masks"),
-    ("Phase 2", "Noise maps", "python scripts/phase2_noise_maps.py --split train", "one-frame error, pointing sensitivity"),
-    ("Phase 2", "Pointing response", "python scripts/phase2_response.py", "first-order detector-response correction"),
-    ("Phase 2", "Noise maps + response", "python scripts/phase2_noise_maps.py --split train --response … --tag resp",
+    ("Runner", "Whole pipeline", "python -m suitdyn run --dataset <name> [--smoke] [--detach]",
+     "every stage in order; skips what is up to date, resumes, retries"),
+    ("Archive", "Manifest", "python scripts/build_manifest.py --span-of <name>", "headers + SHA-256 of the raw files"),
+    ("Archive", "Per-frame measurements", "python scripts/process_frames.py --span-of <name>", "limb fits, QC, seams, motion"),
+    ("Data set", "Registration", "python scripts/registration_study.py", "disk-centred, north-up; frame QC (span only)"),
+    ("Data set", "Data set", "python scripts/build_sequences.py", "frame list, time splits, windows, sealed test"),
+    ("Data set", "Calibration", "python scripts/calibrate_pattern.py", "detector fixed pattern from the training split"),
+    ("Data set", "Store (Zarr)", "python scripts/build_store.py", "calibrated, registered 1536² frames + QC masks"),
+    ("Data set", "Noise maps", "python scripts/phase2_noise_maps.py --split train", "one-frame error, pointing sensitivity"),
+    ("Data set", "Pointing response", "python scripts/phase2_response.py", "first-order detector-response correction"),
+    ("Data set", "Noise maps + response", "python scripts/phase2_noise_maps.py --split train --response … --tag resp",
      "trusted region"),
-    ("Phase 2", "Floor origin", "python scripts/phase2_floor_origin.py", "structure function: 4–5 min oscillation"),
-    ("Phase 2", "Baselines B0/B1", "python scripts/phase2_baselines.py --split val …", "noise floor and baselines by horizon"),
-    ("Phase 2", "Verify data set", "python scripts/verify_dataset.py", "every frame byte-identical on the share"),
-    ("Phase 3", "Samples 384²", "python scripts/phase3_prepare.py", "frame cache; 5 derotated context frames + target"),
-    ("Phase 3", "Static background S", "python scripts/phase3_background.py", "background solved from rotation residuals"),
-    ("Phase 3", "Background-aware samples", "python scripts/phase3_prepare_bg.py", "context derotated as rot(F − S) + S"),
-    ("Phase 3", "Train UNet", "python scripts/phase3_train.py --model unet --seed 0 [--inputs bg]", "residual over B1"),
-    ("Phase 3", "Train ConvLSTM", "python scripts/phase3_train.py --model convlstm --seed 0", "residual over B1"),
-    ("Phase 3", "Why-skill diagnostics", "python scripts/phase3_why_skill.py", "static artefacts vs learned skill"),
-    ("Phase 3", "Evaluation", "python scripts/phase3_evaluate.py", "validation metrics, block bootstrap"),
+    ("Learning", "Samples", "python scripts/phase3_prepare.py", "frame cache + sample index (samples built on the fly)"),
+    ("Learning", "Static background S", "python scripts/phase3_background.py", "what derotation must not move"),
+    ("Learning", "Train UNet", "python scripts/phase3_train.py --model unet --seed N", "residual over the background-aware B1"),
+    ("Learning", "Train ConvLSTM", "python scripts/phase3_train.py --model convlstm --seed N", "residual over the background-aware B1"),
+    ("Learning", "Evaluation", "python scripts/phase3_evaluate.py", "strongest baselines, bootstrap, negative controls"),
 ]
-STAGE_TO_CATALOGUE = {"build_manifest": "Manifest", "manifest": "Manifest", "process_frames": "Per-frame measurements",
-                      "registration_study": "Registration", "build_sequences": "Data set", "build_store": "Store (Zarr)",
-                      "noise_maps": "Noise maps", "response": "Pointing response", "phase3_prepare_bg": "Background-aware samples",
-                      "phase3_prepare": "Samples 384²", "phase3_background": "Static background S",
-                      "why_skill": "Why-skill diagnostics"}
+STAGE_TO_CATALOGUE = {"manifest": "Manifest", "build_manifest": "Manifest", "frames": "Per-frame measurements",
+                      "process_frames": "Per-frame measurements", "registration": "Registration",
+                      "sequences": "Data set", "calibration": "Calibration", "calibrate_pattern": "Calibration",
+                      "store": "Store (Zarr)", "build_store": "Store (Zarr)", "noise_maps": "Noise maps",
+                      "response": "Pointing response", "samples": "Samples", "phase3_prepare": "Samples",
+                      "background": "Static background S", "evaluate": "Evaluation", "pipeline": "Whole pipeline"}
+PIPELINE_ORDER = ["manifest", "frames", "registration", "sequences", "calibration", "store", "noise_maps", "response",
+                  "noise_maps_resp", "samples", "background", "train", "evaluate"]
+SCRIPT_OF = {"manifest": "scripts/build_manifest.py", "frames": "scripts/process_frames.py",
+             "registration": "scripts/registration_study.py", "sequences": "scripts/build_sequences.py",
+             "calibration": "scripts/calibrate_pattern.py", "store": "scripts/build_store.py",
+             "noise_maps": "scripts/phase2_noise_maps.py", "response": "scripts/phase2_response.py",
+             "noise_maps_resp": "scripts/phase2_noise_maps.py", "samples": "scripts/phase3_prepare.py",
+             "background": "scripts/phase3_background.py", "train": "scripts/phase3_train.py",
+             "evaluate": "scripts/phase3_evaluate.py"}
 
 
 # --------------------------------------------------------------------------------------- helpers
@@ -106,6 +111,8 @@ def catalogue_stage(name):
     name = name or ""
     if name.startswith("noise_maps") and "resp" in name:
         return "Noise maps + response"
+    if name.startswith("train"):
+        return "Train ConvLSTM" if "convlstm" in name else "Train UNet"
     keys = [k for k in STAGE_TO_CATALOGUE if name.startswith(k)]
     return STAGE_TO_CATALOGUE[max(keys, key=len)] if keys else None
 
@@ -456,12 +463,63 @@ class Collector:
         chains.sort(key=lambda c: -c["mtime"])
         return chains
 
+    def _pipelines(self):
+        """The runner's per-stage state (outputs/pipeline/<data set>/state/*.json) in the chain format."""
+        out = []
+        base = self.root / "outputs" / "pipeline"
+        for dsd in sorted(base.glob("*")) if base.exists() else []:
+            sd = dsd / "state"
+            states = {}
+            for f in sd.glob("*.json") if sd.exists() else []:
+                try:
+                    j = json.loads(f.read_text(encoding="utf-8"))
+                    states[j.get("stage", f.stem)] = (j, f.stat().st_mtime)
+                except Exception:
+                    pass
+            lock = dsd / "runner.lock"
+            alive = False
+            if lock.exists():
+                try:
+                    alive = pid_alive(json.loads(lock.read_text()).get("pid", 0))
+                except Exception:
+                    pass
+            if not states and not alive:
+                continue
+            try:
+                p3 = tomllib.loads((self.root / "configs" / "phase3.toml").read_text(encoding="utf-8"))
+                trains = [f"train:{m}:{sd_}" for m in p3["model"]["types"] for sd_ in p3["train"]["seeds"]]
+            except Exception:
+                trains = []
+            names = [n for n in PIPELINE_ORDER if n != "train"]
+            names = names[:names.index("evaluate")] + sorted(set(trains) | {k for k in states if k.startswith("train:")}) + ["evaluate"]
+            steps, running_log = [], None
+            for n in names:
+                j, mt = states.get(n, ({}, 0))
+                st = j.get("status", "pending")
+                if st == "running" and not alive:
+                    st = "stalled"
+                st = st if st in STATUS_COLOR else ("failed" if st == "interrupted" else "pending")
+                key = n.split(":")[0]
+                cmd = f"python {SCRIPT_OF.get(key, '?')} {' '.join(j.get('args', []))}".strip()
+                steps.append({"name": n, "cmd": cmd, "dataset": dsd.name, "status": st, "start": j.get("started"),
+                              "end": j.get("ended"), "attempts": j.get("attempts")})
+                if st in ("running", "stalled", "failed") and running_log is None:
+                    running_log = dsd / "logs" / f"{n.replace(':', '_')}.log"
+            log = running_log if running_log and running_log.exists() else dsd / "logs" / "runner.log"
+            state = ("running" if alive else "failed" if any(x["status"] in ("failed", "stalled") for x in steps)
+                     else "done" if steps and steps[-1]["status"] == "done" else "stopped")
+            out.append({"name": f"pipeline {dsd.name}", "file": str(dsd), "log": str(log), "steps": steps, "state": state,
+                        "log_tail": tail(log, 60000)[-60:] if log.exists() else [],
+                        "started": min((x["start"] for x in steps if x.get("start")), default=None),
+                        "mtime": max([m for _, m in states.values()] + [lock.stat().st_mtime if lock.exists() else 0])})
+        return out
+
     def _runs(self):
         runs = []
-        for rd in sorted(self.root.glob("outputs/phase3*/runs/*")):
-            if not rd.is_dir():
+        for rd in sorted(self.root.glob("outputs/datasets/*/phase3/runs*/*")):
+            if not rd.is_dir() or rd.name.startswith("_"):
                 continue
-            ds = rd.parent.parent.name.replace("phase3", "").strip("_") or "v0"
+            ds = rd.parent.parent.parent.name + (" (smoke)" if rd.parent.name.endswith("smoke") else "")
             r = {"run": rd.name, "dataset": ds, "status": "pending"}
             if (rd / "run.json").exists():
                 try:
@@ -472,7 +530,8 @@ class Collector:
                              seconds=j.get("seconds"))
                 except Exception:
                     pass
-            logf = rd.parent / f"train_{rd.name}.log"
+            logf = rd.parent.parent.parent.parent.parent / "pipeline" / rd.parent.parent.parent.name / "logs" / \
+                f"train_{r.get('model', rd.name.split('_')[0])}_{r.get('seed', rd.name.rsplit('s', 1)[-1])}.log"
             last = None
             for ln in reversed(tail(logf, 20000)):
                 if ln.startswith("{") and '"epoch"' in ln:
@@ -503,7 +562,7 @@ class Collector:
                     pass
                 snap["procs"] = self._processes()
                 snap["beats"], snap["history"] = self._heartbeats()
-                snap["chains"] = self._chains()
+                snap["chains"] = sorted(self._pipelines() + self._chains(), key=lambda c: -c["mtime"])
                 snap["runs"] = self._runs()
                 with self.lock:
                     snap["days"], snap["index_n"], snap["index_t"] = dict(self.days), len(self.index), self.index_t

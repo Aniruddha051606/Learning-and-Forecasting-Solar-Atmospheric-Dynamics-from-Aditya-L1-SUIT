@@ -24,7 +24,12 @@ from suitdyn import atomic, config, manifest  # noqa: E402
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--span-of", default=None, help="only files inside this data set's time span (the rest is kept)")
+    a = ap.parse_args()
     cfg = config.load()
+    span = config.dataset_span(config.load_dataset(a.span_of)) if a.span_of else None
     out = config.out_dir(cfg)
     t0 = time.time()
     prev_path = out / "manifest.parquet"
@@ -34,7 +39,7 @@ def main():
     if prev is not None:
         # only complete rows are reused; rows damaged by the 2026-09-27 reuse bug (DATE-OBS lost) are re-read
         prev = prev[prev["DATE-OBS"].notna() & prev["FTR_NAME"].notna()]
-    df = manifest.build(cfg["paths"]["raw_root"], workers=cfg["run"]["workers"] + 2, previous=prev)
+    df = manifest.build(cfg["paths"]["raw_root"], workers=cfg["run"]["workers"] + 2, previous=prev, span=span)
     df["source"] = "archive"
     n_archive, n_local, conflicts = len(df), 0, 0
     lcm = cfg["paths"].get("local_copy_manifest")

@@ -75,9 +75,9 @@ def stages(ds, smoke=False):
     d3 = d + ["configs/phase3.toml"]
     resp = str(paths.phase2("response", f"response_{ds}.npz", name=ds))
     st = [
-        Stage("manifest", "scripts/build_manifest.py", scope="archive", outputs=[paths.archive("manifest.parquet")],
+        Stage("manifest", "scripts/build_manifest.py", ["--span-of", ds], scope="archive", outputs=[paths.archive("manifest.parquet")],
               configs=p1, raw=True, retries=2),
-        Stage("frames", "scripts/process_frames.py", deps=["manifest"], scope="archive",
+        Stage("frames", "scripts/process_frames.py", ["--span-of", ds], deps=["manifest"], scope="archive",
               outputs=[paths.archive("frames_full.parquet")], configs=p1, raw=True, retries=2, disk_gb=0.3),
         Stage("registration", "scripts/registration_study.py", deps=["frames"],
               outputs=[paths.phase1("registration.parquet", name=ds)], configs=d, raw=True, retries=1),

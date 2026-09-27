@@ -140,11 +140,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="process only the first N frames of each kind (smoke test)")
     ap.add_argument("--full", action="store_true", help="ignore earlier results and process every frame")
+    ap.add_argument("--span-of", default=None, help="only frames inside this data set's time span (the rest is kept)")
     a = ap.parse_args()
     out = config.out_dir(CFG)
     sig = proc_signature()
     man = pd.read_parquet(out / "manifest.parquet")
     man = man[man.read_error.isna()].sort_values("t")
+    if a.span_of:
+        lo, hi = config.dataset_span(config.load_dataset(a.span_of))
+        man = man[(man.t >= lo) & (man.t <= hi)]
     full = man[man.frame.isin(["full", "full_binned"])].reset_index(drop=True)
     roi = man[man.frame == "roi"].reset_index(drop=True)
     if a.limit:

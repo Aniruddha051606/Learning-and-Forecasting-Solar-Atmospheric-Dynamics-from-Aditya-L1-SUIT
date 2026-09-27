@@ -1,4 +1,4 @@
-# Data set c0: the CENTRED pointing mode (19 Sep -> 23 Sep ~05:00 UT). Same rules as v0 (configs/phase2.toml)
+# Data set c0: the CENTRED pointing mode (19 Sep -> 23 Sep ~05:00 UT). Same rules as v0 (configs/datasets/v0.toml)
 # except the pointing mode and the dates. In centred mode the Level-1 disk is nearly free of the offset-mode
 # vignetting gradient (PHASE3 4b), so c0 is a natural instrument control for the Phase 3 finding that model skill
 # at long horizons is mostly undoing the derotation of a static background.
@@ -14,6 +14,9 @@ exclude_flags = ["pointing_mode_change", "limb_outlier", "spike_rate"]
 # The first frame of every observing-program block, and of every run after a gap, is 15-19 % too
 # bright (PHASE1.md A8; confirmed for gaps within a program in Phase 2).
 drop_program_first_frame = true
+
+[scope]
+margin_h = 3
 
 [split]
 # Cut only at natural observing gaps; every boundary falls in a gap longer than max_gap_s.
