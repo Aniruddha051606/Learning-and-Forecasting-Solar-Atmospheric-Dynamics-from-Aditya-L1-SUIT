@@ -10,7 +10,7 @@ config hashes, data provenance, seed, parameters, optimiser, GPU, timings).
 Robust to the laptop shutting down (it did, 2026-09-27 13:08, under full GPU load):
   * last.pt after every epoch holds model, optimiser, scheduler, RNG states, log and early-stopping
     state; a rerun of the same command resumes from it (a finished run is skipped);
-  * a thermal guard reads the GPU temperature every 20 batches and pauses at >= --max-temp until the
+  * a thermal guard reads the GPU temperature every 5 batches and pauses at >= --max-temp until the
     GPU is back below --resume-temp; peak temperature and pause time are logged per epoch.
 """
 import argparse
@@ -168,7 +168,7 @@ def main():
         order = rng.permutation(tr.idx)
         tl, nb = 0.0, 0
         for bi, s in enumerate(range(0, len(order), a.batch)):
-            if bi % 20 == 0:
+            if bi % 5 == 0:  # every 5 batches: at 20 the GPU still overshot to 93-94 C
                 thermal.check()
             x, y, m, h = tr.batch(np.sort(order[s:s + a.batch]), dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
