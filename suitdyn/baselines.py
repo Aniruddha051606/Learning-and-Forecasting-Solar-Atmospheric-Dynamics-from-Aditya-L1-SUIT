@@ -34,11 +34,15 @@ def heliographic(grid, r_ref, b0_deg):
     return lat, lon
 
 
-def derotation_coords(grid, r_ref, b0_deg, dt_s):
+def derotation_coords(grid, r_ref, b0_deg, dt_s, rate_offset=None):
     """Source pixel coordinates (rows, cols) in the frame at t for every pixel of the frame at t+dt_s,
-    and a mask of pixels whose source was on the visible disk."""
+    and a mask of pixels whose source was on the visible disk. `rate_offset` = (a, b) adds
+    a + b·sin²(latitude) deg/day to the Snodgrass & Ulrich rate (a rate fitted to the data)."""
     lat, lon = heliographic(grid, r_ref, b0_deg)
-    w = np.deg2rad(solar.synodic_deg_per_day(np.rad2deg(lat))) / 86400.0
+    rate = solar.synodic_deg_per_day(np.rad2deg(lat))
+    if rate_offset is not None:
+        rate = rate + rate_offset[0] + rate_offset[1] * np.sin(lat) ** 2
+    w = np.deg2rad(rate) / 86400.0
     lon_s = lon - w * dt_s
     b = np.deg2rad(b0_deg)
     xs = np.cos(lat) * np.sin(lon_s)
