@@ -48,13 +48,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="v0")
     ap.add_argument("--grid", type=int, default=CFG["register"]["grid"])
-    ap.add_argument("--pattern", default=str(P1 / "calibration" / "nb03_pattern_multiplicative.npy"))
-    ap.add_argument("--pattern-mode", default="multiplicative")
+    ap.add_argument("--pattern", default=str(P1 / "calibration" / "nb03_pattern_adopted.npy"),
+                    help="pattern file, or 'none'; the default is the one adopted by phase2_calibration_followup.py")
+    ap.add_argument("--pattern-mode", default="",
+                    help="additive / multiplicative; default: read from the pattern's .json provenance")
     ap.add_argument("--splits", default="train,val,test")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="first N frames only (smoke test)")
     a = ap.parse_args()
     pattern = None if a.pattern.lower() == "none" else a.pattern
+    if pattern and not a.pattern_mode:
+        pj = Path(pattern).with_suffix(".json")
+        a.pattern_mode = json.loads(pj.read_text())["mode"] if pj.exists() else "multiplicative"
     STORES.mkdir(parents=True, exist_ok=True)
     zpath = str(STORES / f"{a.name}.zarr")
     r_ref = CFG["register"]["r_ref"] * a.grid / CFG["register"]["grid"]

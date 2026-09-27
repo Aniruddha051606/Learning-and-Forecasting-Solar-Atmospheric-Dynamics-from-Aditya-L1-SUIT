@@ -162,25 +162,36 @@ def main():
           "relative_corrected": a_rel / b_rel, "absolute_corrected": a_abs / b_abs,
           "expected_multiplicative": {"relative_corrected": 1.0, "absolute_corrected": k_ratio},
           "expected_additive": {"relative_corrected": 1 / k_ratio, "absolute_corrected": 1.0}}
-    d_mult = abs(np.log(c2["relative_corrected"])) + abs(np.log(c2["absolute_corrected"] / k_ratio))
-    d_add = abs(np.log(c2["relative_corrected"] * k_ratio)) + abs(np.log(c2["absolute_corrected"]))
+    # Decision on the raw amplitude ratios. The "noise control" above divides by near-zero medians of
+    # noise-dominated pixels and is kept only as a diagnostic (docs/PHASE2.md §2).
+    d_mult = abs(np.log(a_rel)) + abs(np.log(a_abs / k_ratio))
+    d_add = abs(np.log(a_rel * k_ratio)) + abs(np.log(a_abs))
     c2["log_distance_to_multiplicative"] = float(d_mult)
     c2["log_distance_to_additive"] = float(d_add)
     c2["closer_to"] = "multiplicative" if d_mult < d_add else "additive"
 
     # C3: rotation test on an offset-only run with each correction
-    pat_add = np.load(CAL / "nb03_pattern_additive.npy")
-    man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path"]).set_index("file").path
-    offs = sel[off]
-    lvl = np.nanmedian(np.array([io.read(man[f])[0] for f in offs.file.iloc[::8]]), 0)
-    lvl = gaussian_filter(lvl, 15)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        pat_rel = np.where(lvl > 500, pat_add / lvl, np.nan)
-    pat_rel_hp = nan_highpass(pat_rel, 8)
+    pat_rel = np.load(CAL / "nb03_pattern_relative.npy")
+    level = np.load(CAL / "nb03_level.npy")
+    pat_add = pat_rel * level
+    hp_px = float(CFG["calibration"]["pattern_highpass_px"])
+    pat_rel_hp = nan_highpass(pat_rel, hp_px)
+    mode = c2["closer_to"]
+    adopted = nan_highpass(pat_add, hp_px) if mode == "additive" else pat_rel_hp
+    adopted = adopted.astype(np.float32)
     c3, rot = rotation_test({"uncorrected": (None, None), "additive": (pat_add, "additive"),
                              "multiplicative": (pat_rel, "multiplicative"),
-                             "multiplicative_highpass8": (pat_rel_hp, "multiplicative")})
+                             "adopted": (adopted, mode)})
     rot.to_csv(CAL / "followup_rotation_test.csv", index=False)
+    apath = CAL / "nb03_pattern_adopted.npy"
+    np.save(apath, adopted)
+    import hashlib
+    prov = {"file": apath.name, "sha256": hashlib.sha256(apath.read_bytes()).hexdigest(), "mode": mode,
+            "highpass_px": hp_px, "units": "counts (Level-1 NB03 binned, 300 ms)" if mode == "additive" else "relative",
+            "made_from": "nb03_pattern_relative.npy x nb03_level.npy (phase2_calibration.py), NaN-aware high-pass",
+            "rms": float(np.nanstd(adopted)), "valid_pixels": int(np.isfinite(adopted).sum()),
+            "why_mode": c2, "why_scale": scales, "rotation_test": c3, **CFG["_meta"]}
+    (CAL / "nb03_pattern_adopted.json").write_text(json.dumps(prov, indent=1, default=float))
 
     summary = {"band": {"rows": [ROWS.start, ROWS.stop], "cols": [COLS.start, COLS.stop]},
                "c1_agreement_by_scale": scales, "c2_mult_vs_add": c2, "c3_rotation_test_offset_run": c3,
@@ -201,7 +212,7 @@ def main():
     ax[1].axhline(1 / k_ratio, color="b", ls="--", label=f"1/ratio {1 / k_ratio:.2f}")
     ax[1].set_title(f"C2: plage vs quiet amplitude ratios -> {c2['closer_to']}\nmult: rel=1, abs=k; add: rel=1/k, abs=1")
     ax[1].legend(fontsize=8)
-    for name, c in zip(("uncorrected", "additive", "multiplicative", "multiplicative_highpass8"), ("0.5", "C0", "C1", "C2")):
+    for name, c in zip(("uncorrected", "additive", "multiplicative", "adopted"), ("0.5", "C0", "C1", "C2")):
         dd = rot[rot.method == name]
         ax[2].plot(dd.expected_dx, dd.dx, "o", ms=3, color=c, label=f"{name}: median {dd.dx.median():.2f}")
     ax[2].plot([-4, 4], [-4, 4], "k-", lw=.5)

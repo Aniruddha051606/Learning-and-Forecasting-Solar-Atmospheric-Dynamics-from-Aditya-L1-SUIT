@@ -219,6 +219,39 @@ most a few 0.1 % here and was shown to be largely instrumental, and the trade-of
   large-scale.
 - Gradient correlation rises from 0.84 (1536) to 0.96 (768) and 0.98 (384) as noise edges drop out.
 
+### 4.6b What the one-frame floor is made of (`scripts/phase2_floor_origin.py`)
+
+The structure function D(τ) is the median relative |B1(F(t)) − F(t+τ)| on the disk, with the
+response correction and per-frame normalisation applied (768², quiet pixels unless stated).
+
+| τ (s) | 21 | 43 | 64 | 85 | 107 | 128 | 149 | 170 | 213 | 256 | 298 | 341 | 405 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 21-s cadence stretch (train), quiet | 0.87 % | 1.16 | 1.41 | 1.60 | 1.69 | **1.71** | 1.67 | 1.59 | 1.41 | **1.34** | 1.38 | 1.48 | 1.62 |
+| 87-s cadence (val), quiet | | | | 1.54 | | | | 1.55 | | **1.31** | | 1.46 | 1.62 |
+
+- **D is not monotonic.** It peaks near 2 min and returns to a minimum near 4.3 min, the signature of
+  an oscillation with a period of about 4–5 min (largest difference at half a period, smallest near a
+  full period). Instrument noise and slow evolution can only make D grow with τ. The independent
+  87-s validation data agree: the error three frames ahead (1.31 %) is lower than one frame ahead
+  (1.54 %).
+- **The dip is spatially selective:** −15 % in quiet Sun, −4 % in plage. Suppression of
+  chromospheric oscillations in strong-field regions is known. A registration or pointing artefact
+  would do the opposite, largest where the image has most structure. Whole-frame (global) instrument
+  oscillations are removed by the per-frame normalisation.
+- **Interpretation (hedged):** a large part of the "noise floor" at 87 s is **solar chromospheric
+  oscillation**, sampled near its half period. Instrument plus registration noise is at most ~0.9 %
+  (the 21-s value, which still contains some oscillation). A check of the pointing series for a
+  ~4-min periodicity was inconclusive, because the high-pass used creates negative autocorrelation at
+  those lags. An instrumental periodicity is therefore not excluded, but it would have to survive
+  registration and normalisation and be weaker where the image has more structure.
+- **Consequences:**
+  1. The skill ceilings in §4.7 treat the one-frame error as irreducible. At short horizons they are
+     too pessimistic, since part of that error is an oscillation that may be partly predictable from
+     a few frames of context. Short-horizon skill must be reported separately as possible
+     "oscillation skill".
+  2. At horizons ≥ 30 min the oscillation is effectively random. Averaging the target over about one
+     period (3 frames) should remove it, which is an ablation for Phase 3.
+
 ### 4.7 What a forecaster could gain over B1 (pixel level)
 
 Taking the one-frame error as an irreducible floor, the best possible skill over B1 at horizon H is

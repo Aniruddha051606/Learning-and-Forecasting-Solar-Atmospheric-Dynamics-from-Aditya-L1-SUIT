@@ -32,6 +32,13 @@ seam_halfwidth = 2
 # Disk region used for intensity statistics, in units of R.
 core_r = 0.9
 
+[calibration]
+# Scale below which the NB03 fixed pattern is corrected (NaN-aware Gaussian high-pass, binned px).
+# A documented choice, not an automatic rule: independent pattern estimates from different days agree
+# at r = 0.949 at 8 px vs 0.888 at 16 px and 0.848 at 32 px (phase2_calibration_followup.py C1);
+# larger scales carry solar leakage (active regions that did not move far enough).
+pattern_highpass_px = 8
+
 [register]
 # Common grid for every full-disk frame (both pipelines): disk-centred, solar north up.
 grid = 1536
