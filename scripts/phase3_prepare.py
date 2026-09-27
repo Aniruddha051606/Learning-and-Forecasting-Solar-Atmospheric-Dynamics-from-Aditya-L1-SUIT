@@ -27,7 +27,7 @@ import pandas as pd
 import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import baselines, config, normalize, response  # noqa: E402
+from suitdyn import baselines, config, normalize, progress, response  # noqa: E402
 
 CFG = config.load_phase2()
 STORES = config.ROOT / "outputs" / "phase2" / "stores"
@@ -81,7 +81,9 @@ def main():
     frames = np.full((len(fr), G, G), np.nan, np.float16)
     with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init,
                              initargs=(zpath, a.grid_factor, str(resp_path), pointing)) as ex:
-        for i, img in ex.map(_frame, fr.store_index.astype(int).tolist(), chunksize=8):
+        fid = fr.set_index("store_index").frame_id
+        for k, (i, img) in enumerate(ex.map(_frame, fr.store_index.astype(int).tolist(), chunksize=8)):
+            progress.report("phase3_prepare: frame cache", item=fid.get(i), i=k, n=len(fr))
             med = np.nanmedian(img[core])
             img = np.where(disk, img / med, np.nan)
             frames[i] = img.astype(np.float16)
@@ -110,6 +112,8 @@ def main():
     for n, w in win.iterrows():
         pos = list(range(int(w["first"]), int(w["last"]) + 1))
         tgt = int(w.target)
+        progress.report("phase3_prepare: samples", item=seqf.frame_id.iloc[tgt], i=n, n=len(win),
+                        horizon=int(w.horizon), set=w["set"])
         t_tgt = seqf.t.iloc[tgt]
         b0 = float(man.loc[seqf.frame_id.iloc[tgt], "HGLT_OBS"])
         dts = []

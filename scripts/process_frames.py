@@ -23,7 +23,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter, median_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config, geometry, io, qc  # noqa: E402
+from suitdyn import config, geometry, io, progress, qc  # noqa: E402
 
 CFG = config.load()
 MAX_PAIR_DT_S = 300
@@ -189,8 +189,17 @@ def main():
 
     t0 = time.time()
     with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
-        res = list(ex.map(full_frame, jobs, chunksize=4))
-        roi_res = list(ex.map(roi_frame, [r.to_dict() for _, r in roi_todo.iterrows()], chunksize=32))
+        res = []
+        for k, out in enumerate(ex.map(full_frame, jobs, chunksize=4)):
+            res.append(out)
+            progress.report("process_frames: full-disk", item=jobs[k][0].get("file"), i=k, n=len(jobs),
+                            path=jobs[k][0].get("path"))
+        roi_jobs = [r.to_dict() for _, r in roi_todo.iterrows()]
+        roi_res = []
+        for k, out in enumerate(ex.map(roi_frame, roi_jobs, chunksize=32)):
+            roi_res.append(out)
+            progress.report("process_frames: ROI", item=roi_jobs[k].get("file"), i=k, n=len(roi_jobs),
+                            path=roi_jobs[k].get("path"))
     new = pd.DataFrame([r for r, _ in res]) if res else pd.DataFrame(columns=["file"])
     seams = pd.DataFrame([s for _, ss in res for s in ss])
     keep = ["file", "t", "obsid", "OBS_MODE", "FTR_NAME", "frame", "NAXIS1", "CMD_EXPT", "MEAS_EXP", "CRPIX1", "CRPIX2",

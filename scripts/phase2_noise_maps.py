@@ -26,7 +26,7 @@ import pandas as pd  # noqa: E402
 import zarr  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import baselines, config, normalize, response  # noqa: E402
+from suitdyn import baselines, config, normalize, progress, response  # noqa: E402
 
 CFG = config.load_phase2()
 SEQ = config.seq_dir()
@@ -66,8 +66,10 @@ def main():
     disk = mu > np.sqrt(1 - 0.95 ** 2)
     acc = {k: np.zeros((grid, grid)) for k in ("n", "abs", "e", "dx", "dy", "edx", "edy", "dx2", "dy2", "dxdy")}
     coords = None
-    for _, w in win.iterrows():
+    for wi, (_, w) in enumerate(win.iterrows()):
         a_, b_ = seqf.iloc[w["last"]], seqf.iloc[w.target]
+        progress.report(f"noise_maps {a.store} {a.split}{' ' + a.tag if a.tag else ''}", item=b_.frame_id, i=wi,
+                        n=len(win))
         i, j = s_of[a_.frame_id], s_of[b_.frame_id]
         last, truth = load(g, i, a.grid_factor), load(g, j, a.grid_factor)
         if resp is not None:

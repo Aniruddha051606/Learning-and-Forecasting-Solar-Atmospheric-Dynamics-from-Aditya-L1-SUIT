@@ -34,7 +34,7 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config  # noqa: E402
+from suitdyn import config, progress  # noqa: E402
 from suitdyn.ml import models  # noqa: E402
 
 CFG = config.load_phase2()
@@ -242,7 +242,11 @@ def main():
             break
         order = rng.permutation(tr.idx)
         tl, nb = 0.0, 0
+        nbatch = (len(order) + a.batch - 1) // a.batch
         for bi, s in enumerate(range(0, len(order), a.batch)):
+            progress.report(f"train {out.name}", item=f"epoch {ep + 1}/{a.epochs}, batch {bi + 1}/{nbatch}", i=bi,
+                            n=nbatch, epoch=ep, gpu_temp=gpu_temp(), duty=round(thermal.d, 3),
+                            best_holdout_skill=None if not log else round(1 - best / b1_holdout, 4))
             if NVML.h is not None or bi % 5 == 0:
                 thermal.check()
             x, y, m, h = tr.batch(np.sort(order[s:s + a.batch]), dev)

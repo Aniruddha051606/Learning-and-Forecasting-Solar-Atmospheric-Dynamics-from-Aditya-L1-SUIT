@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import phase3_evaluate as ev  # noqa: E402
 import phase3_why_skill as wy  # noqa: E402
-from suitdyn import baselines, config  # noqa: E402
+from suitdyn import baselines, config, progress  # noqa: E402
 
 CFG, G, CACHE = ev.CFG, ev.G, ev.CACHE
 OUT = config.phase3_dir("background")
@@ -171,7 +171,9 @@ def main():
     ops_tr = {h: horizon_operator(meta, train, h, r_ref, pos) for h in hs}
     print(f"train M(H) and operators ready ({time.time() - t0:.0f} s)", flush=True)
     scores, x0, cache = {}, None, {}
-    for lam in [float(v) for v in a.lambdas.split(",")]:
+    lams = [float(v) for v in a.lambdas.split(",")]
+    for k, lam in enumerate(lams):
+        progress.report("phase3_background: lambda scan", item=f"lambda = {lam}", i=k, n=len(lams), every_s=0)
         S, x0, info = solve_S(M_tr, ops_tr, Dg, lam, pos, x0)
         sc = score(meta, X, Y, ho, S, r_ref, cache)
         gain = {h: 1 - sc[h]["B1-avg-bgS"] / sc[h]["B1-avg"] for h in sc}

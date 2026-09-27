@@ -22,7 +22,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import phase3_why_skill as wy  # noqa: E402  (context_store)
-from suitdyn import baselines, config  # noqa: E402
+from suitdyn import baselines, config, progress  # noqa: E402
 
 CFG = config.load_phase2()
 CACHE = config.phase3_dir("cache")
@@ -47,7 +47,10 @@ def main():
     t_store = store_fr.set_index("t").store_index.sort_index()
     Xb = np.lib.format.open_memmap(CACHE / f"X_{G}_bg.npy", mode="w+", dtype=np.float16, shape=X.shape)
     cache, worst = {}, 0.0
+    fid = store_fr.set_index("store_index").frame_id
     for n, (i, row) in enumerate(meta.iterrows()):
+        progress.report("phase3_prepare_bg", item=fid.get(int(row.store_target)), i=n, n=len(meta),
+                        horizon=int(row.horizon), set=row.set)
         b0 = float(b0_of[row.store_target])
         stores = wy.context_store(row, t_store)
         for k, (s, dt) in enumerate(zip(stores, row.dt_context_s)):

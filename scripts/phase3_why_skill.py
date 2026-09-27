@@ -58,7 +58,7 @@ import torch  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import phase3_evaluate as ev  # noqa: E402  (shared constants and helpers)
-from suitdyn import baselines, config  # noqa: E402
+from suitdyn import baselines, config, progress  # noqa: E402
 from suitdyn.ml import models  # noqa: E402
 
 CFG, G, CACHE, RUNS = ev.CFG, ev.G, ev.CACHE, ev.RUNS
@@ -325,7 +325,10 @@ def main():
     cache0, cache1 = {}, {}
     vsum, vcnt = {}, {}
     rows, diag = [], []
+    fid = store_fr.set_index("store_index").frame_id
     for n, (i, row) in enumerate(val.iterrows()):
+        progress.report("why_skill: validation", item=fid.get(int(row.store_target)), i=n, n=len(val),
+                        horizon=int(row.horizon))
         x = np.asarray(X[i], dtype=np.float32)
         y = np.asarray(Y[i], dtype=np.float32)
         valid = np.isfinite(y) & np.isfinite(x).all(0)

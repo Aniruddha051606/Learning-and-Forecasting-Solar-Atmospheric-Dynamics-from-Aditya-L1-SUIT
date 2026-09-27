@@ -21,7 +21,7 @@ import zarr
 from zarr.codecs import BloscCodec
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from suitdyn import config, store  # noqa: E402
+from suitdyn import config, progress, store  # noqa: E402
 
 CFG = config.load_phase2()
 P1 = config.out_dir(CFG)
@@ -106,6 +106,8 @@ def main():
     t0 = time.time()
     with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init, initargs=(pattern, a.response_map or None)) as ex:
         for k, _ in enumerate(ex.map(_write, jobs, chunksize=2)):
+            progress.report(f"build_store {a.name}", item=jobs[k][1].get("frame_id"), i=k, n=len(jobs),
+                            path=jobs[k][1].get("path"))
             if k % 200 == 0:
                 print(f"{k}/{len(jobs)} frames, {time.time() - t0:.0f} s", flush=True)
     size = sum(p.stat().st_size for p in Path(zpath).rglob("*") if p.is_file())
