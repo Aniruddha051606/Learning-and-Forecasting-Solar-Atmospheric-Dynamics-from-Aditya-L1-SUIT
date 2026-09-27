@@ -10,11 +10,16 @@ config hashes, data provenance, seed, parameters, optimiser, GPU, timings).
 Robust to the laptop shutting down (it did, 2026-09-27 13:08, under full GPU load):
   * last.pt after every epoch holds model, optimiser, scheduler, RNG states, log and early-stopping
     state; a rerun of the same command resumes from it (a finished run is skipped);
-  * a thermal guard reads the GPU temperature every 5 batches and pauses at >= --max-temp until the
-    GPU is back below --resume-temp; peak temperature and pause time are logged per epoch.
+  * a thermal guard reads the GPU temperature before EVERY batch (in-process NVML, ~0.02 ms; nvidia-smi
+    every 5 batches only if NVML is unavailable) and pauses at >= --max-temp until the GPU is back below
+    --resume-temp; peak temperature and pause time are logged per epoch. Sampling every 5 batches through
+    nvidia-smi overshot an 84 C trip point to 88-94 C (96 C with a second GPU job running): the same
+    range as the shutdown. Never run another GPU job while training.
 """
 import argparse
+import ctypes
 import hashlib
+import os
 import json
 import random
 import subprocess
@@ -58,7 +63,34 @@ class Data:
                 t(self.h[ids]))
 
 
+class _NVML:
+    """GPU temperature from the driver's NVML library, in-process (no child process per reading)."""
+
+    def __init__(self):
+        self.h = None
+        try:
+            lib = ctypes.WinDLL(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvml.dll")) \
+                if os.name == "nt" else ctypes.CDLL("libnvidia-ml.so.1")
+            h = ctypes.c_void_p()
+            if lib.nvmlInit_v2() == 0 and lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(h)) == 0:
+                self.lib, self.h = lib, h
+        except Exception:
+            self.h = None
+
+    def temp(self):
+        t = ctypes.c_uint()
+        if self.h is None or self.lib.nvmlDeviceGetTemperature(self.h, 0, ctypes.byref(t)) != 0:
+            return float("nan")
+        return float(t.value)
+
+
+NVML = _NVML()
+
+
 def gpu_temp():
+    t = NVML.temp()
+    if t == t:
+        return t
     try:
         r = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
                            capture_output=True, text=True, timeout=10)
@@ -80,7 +112,7 @@ class Thermal:
             torch.cuda.synchronize()
             t0 = time.time()
             while True:
-                time.sleep(10)
+                time.sleep(5)
                 t = gpu_temp()
                 if not (t == t) or t < self.resume_temp:
                     break
@@ -122,8 +154,8 @@ def main():
     ap.add_argument("--wd", type=float, default=1e-4)
     ap.add_argument("--patience", type=int, default=6)
     ap.add_argument("--grid", type=int, default=384)
-    ap.add_argument("--max-temp", type=float, default=87.0)
-    ap.add_argument("--resume-temp", type=float, default=80.0)
+    ap.add_argument("--max-temp", type=float, default=80.0)
+    ap.add_argument("--resume-temp", type=float, default=72.0)
     a = ap.parse_args()
     random.seed(a.seed)
     np.random.seed(a.seed)
@@ -168,7 +200,7 @@ def main():
         order = rng.permutation(tr.idx)
         tl, nb = 0.0, 0
         for bi, s in enumerate(range(0, len(order), a.batch)):
-            if bi % 5 == 0:  # every 5 batches: at 20 the GPU still overshot to 93-94 C
+            if NVML.h is not None or bi % 5 == 0:
                 thermal.check()
             x, y, m, h = tr.batch(np.sort(order[s:s + a.batch]), dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
