@@ -6,6 +6,23 @@ This is still prototype data. Nothing here is evidence of generalisation.
 
 ---
 
+## 0. Data source (updated 2026-09-27)
+
+**Archive of record:** the network share `//192.168.1.2/DATA/pradan1.issdc.gov.in/...` (config
+`raw_root`, read-only), reached over Ethernet: 1 Gbps link; 89 MB/s large-file reads; ~19 MB/s when
+checksumming many small files over SMB. It is still being downloaded into.
+- **Local copy:** the earlier `D:/Data/...` copy is kept untouched (`local_copy_root`). Its manifest
+  supplies only files not yet on the share (`source = local_copy`, 1,360 files on 2026-09-27, none of
+  them in data set v0).
+- **Identity:** all 10,977 files present in both places were byte-identical.
+- **Dataset v0 is fully reproducible from the share alone:** `scripts/verify_dataset.py` reports
+  2,202 of 2,202 frames identical, all read from the share.
+- **New data:** 26 Sep (T26_1489) is processed (119 full-disk, 741 ROI frames). It lies outside the
+  v0 splits and is kept for the next data set version.
+- **Bug found and fixed on the way:** incremental manifest rebuilds reused rows via `itertuples`,
+  which silently renames non-identifier columns. `DATE-OBS` was dropped from 11,837 reused rows. The
+  fix reuses rows as records and only reuses complete rows; there is a regression test.
+
 ## 1. New instrument findings
 
 ### 1.1 Two pointing modes: the Sun moved 480 px on the detector (2026-09-23 ~05:00 UT)
