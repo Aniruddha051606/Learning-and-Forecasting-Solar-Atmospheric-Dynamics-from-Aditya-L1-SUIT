@@ -5,6 +5,7 @@ file name and SHA-256, so the exact raw input can be re-downloaded from PRADAN a
 """
 import hashlib
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -59,11 +60,14 @@ def frame_type(df):
     return np.select([roi, binned], ["roi", "full_binned"], "full")
 
 
-def build(raw_root, workers=8, previous=None):
+def build(raw_root, workers=8, previous=None, settle_s=120.0):
     """Manifest of every *.fits under raw_root. Rows of `previous` (an earlier manifest) are reused for
     files whose path, size and modification time are unchanged, so only new or changed files are read
-    and checksummed. Partial downloads (*.fits.part) are never listed."""
-    files = sorted(Path(raw_root).rglob("*.fits"))
+    and checksummed. Partial downloads (*.fits.part) are never listed, and files modified in the last
+    `settle_s` seconds are left for a later run (the archive of record is a share that is still being
+    downloaded into). raw_root may be a UNC share written with forward slashes (//host/share/...)."""
+    now = time.time()
+    files = [f for f in sorted(Path(raw_root).rglob("*.fits")) if now - f.stat().st_mtime >= settle_s]
     reuse = {}
     if previous is not None and "mtime_ns" in previous:
         ok = previous["read_error"].isna()
