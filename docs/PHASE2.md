@@ -268,6 +268,11 @@ most a few 0.1 % here and was shown to be largely instrumental, and the trade-of
 - **The forecastable change is almost independent of resolution:** B1 grows by about 2 percentage
   points from one frame to 3.8 h at every resolution. At hour horizons the evolution B1 misses is
   large-scale.
+  - **Correction (Phase 3, PHASE3 §3.1, §5):** part of this large-scale growth is not solar. B1
+    derotates structure that is fixed on the grid: the limb-darkening background, the seams and the
+    uncorrected large-scale detector pattern. Between 28 min and 3.8 h (384², validation), about 30 %
+    of the context-mean baseline's error growth is removed by a static per-horizon map learned from
+    training data alone.
 - Gradient correlation rises from 0.84 (1536) to 0.96 (768) and 0.98 (384) as noise edges drop out.
 
 ### 4.6b What the one-frame floor is made of (`scripts/phase2_floor_origin.py`)
@@ -304,6 +309,11 @@ response correction and per-frame normalisation applied (768², quiet pixels unl
      period (3 frames) should remove it, which is an ablation for Phase 3.
 
 ### 4.7 What a forecaster could gain over B1 (pixel level), corrected in Phase 3
+
+> **Second correction (Phase 3, PHASE3 §5):** these ceilings are measured against B1. B1 contains the
+> static derotation artefact (limb darkening, seams and detector pattern moved by the derotation), so
+> the ceilings overstate the room for a solar forecaster at long horizons. They are recomputed once a
+> background-aware B1 exists (PHASE3 §6).
 
 **Correction.** The first version of this section treated the whole one-frame error as irreducible
 and used (err_B1 − floor) / err_B1 as a ceiling (e.g. 18 % at 28 min, 384²). That was wrong. The
