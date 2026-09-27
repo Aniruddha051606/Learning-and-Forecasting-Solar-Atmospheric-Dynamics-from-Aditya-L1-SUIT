@@ -1,6 +1,9 @@
 # Phase 1 settings: manifest, audit, QC, registration. Every script reads this file; nothing is hard-coded.
 
 [paths]
+# Archive of record: the network share (read-only; forward slashes: a leading \ is mangled by shells
+# and TOML). scripts/sync_archive.py mirrors new files from it into raw_root, the local working copy.
+archive_root = "//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
 raw_root = "D:/Data/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1"
 out = "outputs/phase1"
 
