@@ -31,8 +31,8 @@ from suitdyn import baselines, config, normalize, response  # noqa: E402
 
 CFG = config.load_phase2()
 STORES = config.ROOT / "outputs" / "phase2" / "stores"
-SEQ = config.ROOT / "outputs" / "phase2" / "sequences"
-OUT = config.ROOT / "outputs" / "phase3" / "cache"
+SEQ = config.seq_dir()
+OUT = config.phase3_dir("cache")
 HORIZONS = (20, 40, 80, 160)
 CONTEXT = 5
 _G = {}
@@ -60,7 +60,7 @@ def _frame(i):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default="v0")
+    ap.add_argument("--store", default=config.DATASET)
     ap.add_argument("--grid-factor", type=int, default=4)
     ap.add_argument("--train-stride", type=int, default=2)
     a = ap.parse_args()
@@ -136,7 +136,7 @@ def main():
     meta.to_parquet(OUT / f"samples_{G}.parquet", index=False)
     np.save(OUT / f"mu_{G}.npy", mu.astype(np.float32))
     # trusted region (Phase 2, training split, after the response correction), resized to G
-    tr = np.load(config.ROOT / "outputs" / "phase2" / "noise_maps" / "noise_maps_v0_train_g2_resp.npz")["trusted"]
+    tr = np.load(config.ROOT / "outputs" / "phase2" / "noise_maps" / f"noise_maps_{a.store}_train_g2_resp.npz")["trusted"]
     idx = (np.arange(G) * tr.shape[0] / G).astype(int)
     np.save(OUT / f"trusted_{G}.npy", tr[np.ix_(idx, idx)])
     info = {"grid": G, "r_ref": r_ref, "context": CONTEXT, "horizons": HORIZONS, "train_stride": a.train_stride,

@@ -25,12 +25,12 @@ import phase3_why_skill as wy  # noqa: E402  (context_store)
 from suitdyn import baselines, config  # noqa: E402
 
 CFG = config.load_phase2()
-CACHE = config.ROOT / "outputs" / "phase3" / "cache"
+CACHE = config.phase3_dir("cache")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--background", default=str(config.ROOT / "outputs" / "phase3" / "background" / "static_bg_384.npz"))
+    ap.add_argument("--background", default=str(config.phase3_dir("background", "static_bg_384.npz")))
     ap.add_argument("--grid", type=int, default=384)
     a = ap.parse_args()
     t0 = time.time()

@@ -38,9 +38,9 @@ from suitdyn import baselines, config  # noqa: E402
 from suitdyn.ml import models  # noqa: E402
 
 CFG = config.load_phase2()
-CACHE = config.ROOT / "outputs" / "phase3" / "cache"
-RUNS = config.ROOT / "outputs" / "phase3" / "runs"
-OUT = config.ROOT / "outputs" / "phase3" / "eval"
+CACHE = config.phase3_dir("cache")
+RUNS = config.phase3_dir("runs")
+OUT = config.phase3_dir("eval")
 G = 384
 # corrected ceilings (PHASE2 §4.7, 384²), by horizon in frames (28 min, 57 min, 1.9 h, 3.8 h)
 CEILING = {20: 0.42, 40: 0.51, 80: 0.59, 160: 0.71}

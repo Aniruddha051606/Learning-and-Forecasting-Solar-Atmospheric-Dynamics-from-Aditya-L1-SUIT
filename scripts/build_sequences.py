@@ -22,7 +22,7 @@ from suitdyn import config, sequences  # noqa: E402
 
 CFG = config.load_phase2()
 P1 = config.out_dir(CFG)
-OUT = config.ROOT / "outputs" / "phase2" / "sequences"
+OUT = config.seq_dir()
 OUT.mkdir(parents=True, exist_ok=True)
 
 

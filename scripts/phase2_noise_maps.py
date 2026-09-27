@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from suitdyn import baselines, config, normalize, response  # noqa: E402
 
 CFG = config.load_phase2()
-SEQ = config.ROOT / "outputs" / "phase2" / "sequences"
+SEQ = config.seq_dir()
 STORES = config.ROOT / "outputs" / "phase2" / "stores"
 OUT = config.ROOT / "outputs" / "phase2" / "noise_maps"
 
@@ -45,7 +45,7 @@ def load(g, i, f):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default="v0")
+    ap.add_argument("--store", default=config.DATASET)
     ap.add_argument("--split", default="val", choices=["train", "val"])
     ap.add_argument("--grid-factor", type=int, default=2)
     ap.add_argument("--response", default="", help="response model npz (phase2_response.py) to apply")

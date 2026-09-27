@@ -41,7 +41,7 @@ import phase3_why_skill as wy  # noqa: E402
 from suitdyn import baselines, config  # noqa: E402
 
 CFG, G, CACHE = ev.CFG, ev.G, ev.CACHE
-OUT = config.ROOT / "outputs" / "phase3" / "background"
+OUT = config.phase3_dir("background")
 R_CLIP = 0.25       # residuals above this are dropped from M(H) (brightenings, spikes)
 RHO_MAX = 0.95      # the sample disk
 

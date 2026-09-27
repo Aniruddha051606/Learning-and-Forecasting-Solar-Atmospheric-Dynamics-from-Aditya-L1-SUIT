@@ -38,8 +38,8 @@ from suitdyn import config  # noqa: E402
 from suitdyn.ml import models  # noqa: E402
 
 CFG = config.load_phase2()
-CACHE = config.ROOT / "outputs" / "phase3" / "cache"
-RUNS = config.ROOT / "outputs" / "phase3" / "runs"
+CACHE = config.phase3_dir("cache")
+RUNS = config.phase3_dir("runs")
 
 
 class Data:

@@ -64,7 +64,7 @@ def level_r2(g, fr, model, split, factor_grid=2, every=1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default="v0")
+    ap.add_argument("--store", default=config.DATASET)
     ap.add_argument("--sigma", type=float, default=6.0)
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)

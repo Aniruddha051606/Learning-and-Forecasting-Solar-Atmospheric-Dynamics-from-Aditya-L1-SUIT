@@ -62,7 +62,7 @@ from suitdyn import baselines, config  # noqa: E402
 from suitdyn.ml import models  # noqa: E402
 
 CFG, G, CACHE, RUNS = ev.CFG, ev.G, ev.CACHE, ev.RUNS
-OUT = config.ROOT / "outputs" / "phase3" / "why"
+OUT = config.phase3_dir("why")
 BANDS = np.arange(-60, 61, 10)          # latitude band edges, degrees
 NB = len(BANDS) - 1
 RHO_MAX = 0.9                           # fit region: away from the limb (foreshortening, LD)
@@ -246,7 +246,7 @@ def main():
     qc, qv = ev.ld_profile(frames, tr_store[::10], mu_np)
     qmap = np.where(np.isfinite(Bg), np.interp(mu_np, qc, qv), np.nan).astype(np.float32)
     np.savez_compressed(out_dir / "static_background.npz", Bg=Bg, qmap=qmap, q_mu=qc, q=qv)
-    s_path = config.ROOT / "outputs" / "phase3" / "background" / f"static_bg_{G}.npz"
+    s_path = config.phase3_dir("background", f"static_bg_{G}.npz")
     S_bg = np.load(s_path)["S"].astype(np.float32) if s_path.exists() else None
     print("background S:", s_path if S_bg is not None else "none (run scripts/phase3_background.py)", flush=True)
     ld = ev.LD(qc, qv, r_ref, mu_np)

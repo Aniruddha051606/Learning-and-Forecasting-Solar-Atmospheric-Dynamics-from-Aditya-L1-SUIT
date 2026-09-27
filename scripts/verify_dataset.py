@@ -23,7 +23,7 @@ CFG = config.load()
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default=str(config.ROOT / "outputs" / "phase2" / "sequences" / "frames.parquet"))
+    ap.add_argument("--dataset", default=str(config.seq_dir() / "frames.parquet"))
     a = ap.parse_args()
     ds = pd.read_parquet(a.dataset)
     man = pd.read_parquet(config.out_dir(CFG) / "manifest.parquet", columns=["file", "sha256", "path"])
@@ -39,7 +39,7 @@ def main():
            "reproducible_from_archive": bool((m.status == "identical").all()),
            "missing_examples": m.loc[m.status == "missing", "frame_id"].head(5).tolist(),
            "different_examples": m.loc[m.status == "different", "frame_id"].head(5).tolist(), **CFG["_meta"]}
-    dst = config.ROOT / "outputs" / "phase2" / "sequences" / "verify_against_archive.json"
+    dst = Path(a.dataset).parent / "verify_against_archive.json"
     dst.write_text(json.dumps(out, indent=1, default=str))
     print(json.dumps({k: out[k] for k in ("frames", "status", "by_split", "reproducible_from_archive",
                                          "missing_examples", "different_examples")}, indent=1, default=str))

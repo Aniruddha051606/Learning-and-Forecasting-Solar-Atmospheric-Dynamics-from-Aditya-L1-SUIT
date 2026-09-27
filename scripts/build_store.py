@@ -25,7 +25,7 @@ from suitdyn import config, store  # noqa: E402
 
 CFG = config.load_phase2()
 P1 = config.out_dir(CFG)
-SEQ = config.ROOT / "outputs" / "phase2" / "sequences"
+SEQ = config.seq_dir()
 STORES = config.ROOT / "outputs" / "phase2" / "stores"
 _PATTERN = None
 _RESP = None
@@ -49,7 +49,7 @@ def _write(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", default="v0")
+    ap.add_argument("--name", default=config.DATASET)
     ap.add_argument("--grid", type=int, default=CFG["register"]["grid"])
     ap.add_argument("--pattern", default=str(P1 / "calibration" / "nb03_pattern_adopted.npy"),
                     help="pattern file, or 'none'; the default is the one adopted by phase2_calibration_followup.py")
