@@ -237,6 +237,67 @@ Validation, every 2nd sample (a code test), skill over B1-avg, whole disk:
   - This laptop's cooling sustains only a small fraction of full GPU power, which limits the speed of
     the final run.
 
+## 4c. Instrument control: the centred pointing mode (data set c0, 2026-09-27/28)
+
+- **The control.** New downloads added 19–22 Sep, all in the CENTRED pointing mode, where the Level-1
+  disk is nearly free of the offset-mode vignetting (east/west 0.80/0.83 at μ = 0.4, against
+  0.97/0.31). Data set c0 (`configs/phase2_c0.toml`, `SUITDYN_DATASET=c0`) is built from it with the
+  same rules as v0:
+
+  | Split | Frames | Hours | Runs |
+  |---|---|---|---|
+  | train | 2,425 | 50.8 | 12 |
+  | val | 451 | 10.8 | 3 |
+  | test (sealed) | 278 | 6.7 | 4 |
+
+- **The prediction.** If the long-horizon skill in v0 was mostly the models undoing the derotation
+  of the vignetting, then in c0 (a) the static-background baselines should gain much less and (b) the
+  models' skill should stop growing with horizon.
+- **Pipeline.** Everything was run as test runs:
+  - the manifest update (55,577 files, 19–26 Sep, 0 missing from the share, 0 checksum conflicts);
+  - Phase 1 on the new frames;
+  - the c0 data set, store, pointing response, noise maps, Phase 3 samples and background S;
+  - one quick UNet (plain inputs, 8 epochs at most, best epoch 2 of 5, hold-out skill vs B1 = 0.127);
+  - the diagnostics on every 2nd validation sample.
+
+Validation, whole disk, skill over B1-avg:
+
+| | 28 min | 57 min | 1.9 h | 3.8 h |
+|---|---|---|---|---|
+| **v0 (offset)**: static background S | 1.0 % | 3.3 % | 9.0 % | 18.3 % |
+| v0: UNet | 7.0 | 8.6 | 12.0 | 23.1 |
+| **c0 (centred)**: static background S | −0.4 | 0.3 | 1.3 | 2.5 |
+| c0: limb darkening only (additive) | 4.3 | 2.8 | 3.0 | 4.8 |
+| c0: UNet | 5.3 | 4.4 | 4.8 | 6.3 |
+| **c0: UNet vs the strongest static baseline** | **1.0 [0.9, 1.2]** | **1.8 [1.3, 2.0]** | **1.8 [1.6, 2.1]** | **1.5 [1.3, 1.8]** |
+
+- **Both predictions hold:**
+  - In centred mode the static background is worth 2.5 % at 3.8 h instead of 18.3 %. Its hold-out
+    gain was 2.8 % instead of 18.5 %.
+  - The UNet's skill no longer grows with horizon.
+- **What is left over the strongest static baseline (limb darkening only) is small and flat:**
+  - 1.0–1.8 % on the disk and 0.9–1.6 % in the trusted region;
+  - in plage 0.8 % (not significant), 0.5 % (not significant), 1.2 % and 1.5 %.
+- **B1-avg error growth** from 28 min to 3.8 h is 1.21 points in c0 (1.90 → 3.11 %) against 1.84 in
+  v0 (1.64 → 3.48 %). About a third of the offset-mode growth was the vignetting artefact, matching §5.
+- **Reading (provisional: one model, one seed, a test run):**
+  - At 28 min – 3.8 h, SUIT NB03 carries little predictable structure beyond rotation and static
+    effects: about 1–2 % of MAE on this data.
+  - Whether even that is solar (for example selective decay) or a residual effect (the additive
+    limb-darkening profile is itself an approximation) needs the negative controls.
+- **Not interpretable yet:** c0 errors are higher at short horizons (B1-avg 1.90 % vs 1.64 % at
+  28 min). It could be different solar conditions, the other pointing mode, or noise.
+
+**Reproducibility problem found in the same run.**
+- Re-running `registration_study.py` on the larger archive changed the registration of dataset v0
+  frames. 2,019–2,087 of 2,202 frames moved by more than 0.01 px, by up to 0.76 px in x and 1.26 px
+  in y (`scripts/compare_registration.py`, `outputs/phase2/sequences/registration_check.json`).
+- It also added `limb_outlier` to 13 v0 frames; a rebuild of v0 would drop them.
+- Registration and QC depend on the other frames processed with them, so Phase 1 is not frame-local.
+- v0's results are unaffected: its stores keep the registration they were built with, and the old
+  tables are kept in `outputs/phase1/snapshot_before_c0`.
+- **Before the final run, freeze Phase 1 per data set.**
+
 ## 5. Consequences for Phase 2 (corrections)
 
 - **PHASE2 §4.6** says "at hour horizons the evolution B1 misses is large-scale". Part of that
