@@ -296,6 +296,7 @@ class Collector:
         self.nvml, self.cpu = NVML(), CPU()
         self.rates = collections.defaultdict(lambda: collections.deque(maxlen=240))
         self.index, self.days, self.index_t = {}, {}, 0.0
+        self.newest = []  # newest NB03 full-disk frames on the share (name, path, observation time)
         self.procs, self.procs_t = [], 0.0
         self.preview = {"key": None, "image": None, "hdr": None, "error": None}
         self.want_preview = None
@@ -323,9 +324,20 @@ class Collector:
                                     days[(m.group(1) if m else "?", "NB03" in f)] += 1
                 except OSError:
                     pass
+            newest = []
+            stamp = re.compile(r"(20\d\d-\d\d-\d\dT\d\d\.\d\d\.\d\d)")
+            nb = sorted((m.group(1), f) for f in idx if "NB03" in f and (m := stamp.search(f)))
+            for ts, f in reversed(nb[-400:]):
+                try:
+                    if os.path.getsize(idx[f]) > 8_000_000:  # 2048² binned full disk (ROIs are smaller)
+                        newest.append((f, idx[f], ts.replace(".", ":").replace("T", " ")))
+                except OSError:
+                    pass
+                if len(newest) >= 12:
+                    break
             with self.lock:
-                self.index, self.days, self.index_t = idx, dict(days), time.time()
-            time.sleep(900)
+                self.index, self.days, self.index_t, self.newest = idx, dict(days), time.time(), newest
+            time.sleep(300)
 
     def _preview_loop(self):
         while True:
@@ -505,13 +517,14 @@ class Collector:
                     except Exception:
                         pass
                 live = [b for b in snap["beats"] if b["alive"] and (b.get("item") or "").lower().endswith(".fits")]
+                snap["feed_mode"] = "live" if live else "archive"
                 if live:
                     self.want_preview = (live[0]["item"], live[0].get("path"))
-                elif self.want_preview is None and snap["history"]:
-                    for h in reversed(snap["history"]):
-                        if (h.get("item") or "").endswith(".fits"):
-                            self.want_preview = (h["item"], h.get("path"))
-                            break
+                elif self.newest:
+                    # nothing reports a file: cycle through the newest full-disk frames on the share (labelled)
+                    k = int(time.time() // 20) % len(self.newest)
+                    self.want_preview = self.newest[k][:2]
+                snap["newest"] = list(self.newest)
                 self.snap = snap
             except Exception as e:  # never let the collector die
                 self.snap = {**self.snap, "error": repr(e)}
@@ -867,15 +880,18 @@ class FeedWindow:
             self.others.config(text="\n".join(others) or "none")
         else:
             running = [st for ch in chains[:1] for st in ch["steps"] if st["status"] == "running"]
-            self.stage.config(text=(f"{running[0]['name']}   ·   running, no per-file feed for this step"
-                                    if running else "idle — no pipeline step is reporting"))
+            since = f" since {datetime.fromtimestamp(running[0]['start']).strftime('%H:%M')}" if running and running[0].get("start") else ""
+            self.stage.config(text=(f"{running[0]['name']}{since}  ·  this step does not report files — "
+                                    f"showing the newest frames on the share" if running
+                                    else "idle — showing the newest frames on the share"))
             self.bar["value"] = 0
             self.prog.config(text=f"chain {chains[0]['name']}: {chains[0]['state']}" if chains else "")
             self.others.config(text="none")
         pv = self.col.preview
         if pv.get("key") and pv.get("key") != self._shown:
             self._shown = pv["key"]
-            self.fname.config(text=pv["key"])
+            mode = "LIVE · " if (self.col.snap or {}).get("feed_mode") == "live" else "ARCHIVE (newest on share) · "
+            self.fname.config(text=mode + pv["key"])
             self.fpath.config(text=pv.get("path") or "")
             if pv.get("image") is not None:
                 box = max(300, min(self.img.winfo_width(), self.img.winfo_height()) - 10)
@@ -895,6 +911,12 @@ class FeedWindow:
             self.hdr.delete("1.0", "end")
             self.hdr.insert("end", "\n".join(lines))
         hist = s.get("history") or []
+        if not hist and s.get("newest"):
+            self.ticker.delete(0, "end")
+            self.ticker.insert("end", "newest NB03 full-disk frames on the share:")
+            for name, _, ts in s["newest"]:
+                self.ticker.insert("end", f"{ts}  {name}")
+            return
         rows, seen = [], set()
         for hrec in reversed(hist):
             it = hrec.get("item") or ""
