@@ -1,6 +1,6 @@
 # SUIT-DYN — project brief (for a reader new to the project)
 
-Status as of 2026-09-27. This brief summarises the project, its findings so far, and what every file
+Status as of 2026-09-28 (pipeline rebuilt; all generated outputs cleared for a clean final run). This brief summarises the project, its findings so far, and what every file
 in the repository does. The detailed reports are `docs/DESIGN.md`, `docs/PHASE1.md`, `docs/PHASE2.md`
 and `docs/PHASE3.md`.
 
@@ -23,13 +23,17 @@ must survive instrument negative controls.
 - **Data level:** Level-1 FITS from ISRO's PRADAN archive. Level 1 includes flat, scatter and PRNU
   corrections, but not distortion or PSF correction. Pixels are int16 with BZERO 30000, so the
   clipped-value floor is −2768.
-- **Data volume so far:** 22 Sep 03:27 → 26 Sep 02:18 UT (~24,000 files). That is only a few days,
-  so **no claim about generalisation is possible yet**.
+- **Data volume so far:** 19 → 26 Sep 2026 on the share (~55,600 files). Centred pointing until 23 Sep
+  ~05:00 UT, offset pointing after. That is about a quarter of one solar rotation, so **no claim about
+  generalisation is possible yet**.
 
 ## 2. Working rules (the project's scientific stance)
 
 - **No random splits.** Splits are by time, cut only inside observing gaps. The **test split is
-  sealed** (hash `3ca4a17d…`); reading it needs an explicit unseal, which has never been done.
+  sealed**: reading it needs an explicit unseal, which has never been done, and a rebuild can never
+  silently replace the seal.
+- **Self-contained data sets.** Registration, QC statistics, calibration and every later product use only
+  frames inside the data set's own time span; the calibration uses only its training split.
 - **Baselines first.**
   - B0: persistence.
   - B1: persistence rotated by solar differential rotation.
@@ -47,28 +51,37 @@ must survive instrument negative controls.
 
 - **Machine:** Windows 11 laptop, RTX 3050 6 GB laptop GPU, Python 3.14, PyTorch 2.14 (CUDA 13).
 - **Raw data:** read directly from a network share,
-  `//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1`.
-  - The share is read-only for the pipeline and is still being downloaded into.
-  - An older local copy under `D:/Data/...` serves as a fallback for files not yet on the share.
-- **Outputs:** everything generated goes to `outputs/`, which git ignores. It is rebuilt from the
-  manifest, config and code.
-- **Thermal safety:** the laptop shut down once under full GPU load. Training therefore has resumable
-  checkpoints and a thermal guard (pause at 80 °C, resume below 72 °C).
-- **Detached launches:** long runs are launched detached through WMI with new-process-group flags.
+  `//192.168.1.2/DATA/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1` (read-only for the
+  pipeline, still being downloaded into). Every file of the old local copy (`D:/Data/...`) is on the share.
+- **Outputs:** everything generated goes to `outputs/`, which git ignores and the pipeline rebuilds.
+- **Thermal safety:** the laptop shut down once under full GPU load. Training uses a duty-cycle
+  controller (target 75 °C, hard stop 85 °C); this laptop sustains only ~6-10 % GPU duty, so training
+  is slow.
+- **Detached runs:** `python -m suitdyn run ... --detach` restarts the runner outside the session (WMI,
+  new process group, no window).
 
 ## 4. Pipeline and data flow
 
+One command, `python -m suitdyn run --dataset <name>`, runs every stage in order (`suitdyn/pipeline.py`):
+
 ```
-raw FITS (share) ──► manifest (headers + SHA-256) ──► per-frame measurements (limb fits, QC, motion)
-   ──► registration (disk-centred, solar-north-up grid 1536², r = 690 px)
-   ──► data set v0: frame list, time splits, (context, horizon) windows, sealed test
-   ──► Zarr store: calibrated (fixed pattern), registered frames + QC masks
-   ──► pointing-response correction, noise maps, baselines (Phase 2)
-   ──► Phase 3 cache: 384² frames, per-frame median normalised; samples (5 context frames derotated
-       to the target time, target frame) for horizons 20/40/80/160 frames (28 min / 57 min / 1.9 h / 3.8 h)
-   ──► static background S ──► background-aware samples
-   ──► models (UNet, ConvLSTM) predict the residual from B1 ──► evaluation and diagnostics
+raw FITS (share)
+ ─ archive (frame-local, grows as data sets need it) ─────────────────────────────────────────────
+   manifest: headers + SHA-256 of the files in the data set's span   (scripts/build_manifest.py)
+   frames:   per-frame limb fit, QC, seams, image motion             (scripts/process_frames.py)
+ ─ data set <name> (only frames inside its span) ──────────────────────────────────────────────────
+   registration → sequences (splits, windows, sealed test) → calibration (fixed pattern, training
+   split) → store (calibrated, registered 1536² frames) → noise maps → pointing response → trusted region
+   → samples (384² frame cache + sample index) → background S → train:<model>:<seed> ... → evaluate
 ```
+- **Fingerprints:** each stage has one, covering its code, configs, inputs and upstream stages. A stage
+  is skipped when up to date and reruns when anything it depends on changed.
+- **Crash and failure handling:** interrupted stages resume (store, training). Only transient
+  network/share failures are retried.
+- **Preflight checks:** disk space, share, GPU, and a lock against two runners on one data set.
+- **Smoke mode:** `--smoke` runs a quick end-to-end test whose outputs are kept apart from the real ones.
+- **On-the-fly samples:** assembled on the GPU from the frame cache (`suitdyn/ml/data.py`). Each context
+  frame is derotated whole (plain B1) or as rot(F − S) + S (background-aware B1).
 
 ## 5. Findings so far, by phase
 
@@ -136,140 +149,112 @@ raw FITS (share) ──► manifest (headers + SHA-256) ──► per-frame meas
   - The fitted rotation rate differs from the Snodgrass & Ulrich magnetic rate by
     −0.18 − 0.29 sin²(latitude) deg/day. Correcting it gains only 1.4 %.
   - Contrast "damping" gives nothing.
-- **Fix in progress: a static background S,** solved from derotation residuals of training pairs (an
-  estimate in the style of Kuhn–Lin–Loranz, using solar rotation as the known shift).
-  - Background-aware derotation is rot(F − S) + S.
-  - On the hold-out run it gains 18 % over B1-avg at 3.8 h.
-  - Models retrained on background-aware inputs are being tested now.
+- **Static background S:** solved from derotation residuals of training pairs, an estimate in the
+  style of Kuhn–Lin–Loranz with solar rotation as the known shift. Background-aware derotation is
+  rot(F − S) + S. In offset mode it gains 18 % over B1-avg at 3.8 h on the hold-out run and 18.3 % on
+  validation.
+- **Instrument control, the centred pointing mode (data set c0):**
+  - With no vignetting, the static background is worth only 2.5 % at 3.8 h.
+  - The model's skill no longer grows with horizon.
+  - What it adds over the strongest static baseline is small and flat: 1.0–1.8 % on the disk, and
+    about 0.5–1.5 % in plage, where the two shortest horizons are not significant.
+  - Whether even that is solar is open: the negative controls are now built into the evaluation.
+- **Reproducibility finding:** registration run over a larger archive changed an existing data set (up
+  to 0.8/1.3 px, 13 new limb outliers). Everything is now scoped per data set.
 - **Bugs found and fixed:**
   - a limb-darkening profile truncated by a fixed brightness window;
   - an incremental manifest rebuild that silently dropped a header column;
-  - thermal-guard gaps.
+  - thermal-guard gaps;
+  - in the rebuild, a loop variable that overwrote the output folder, and retries of deterministic errors;
+  - the background S is unreliable in the outer disk ring (r > 0.9), so all metrics now exclude it.
 
 ## 6. Repository map
 
 ### Top level
 | File | Purpose |
 |---|---|
-| `.gitignore` | Keeps generated data out of git: `outputs/`, `data/`, `*.fits`, `*.zarr/`, caches. |
-| `requirements.txt` | Pinned dependencies: astropy, numpy, pandas, pyarrow, scipy, scikit-image, OpenCV, sunpy, zarr, matplotlib, torch. Known gaps: pytest is missing, and the CUDA torch build needs the PyTorch package index. |
+| `README.md` | The question, enforced rules, how to run, pipeline stages, layout. |
+| `requirements.txt` | Pinned dependencies, including pytest and the dashboard build tools; torch from PyTorch's CUDA 13.0 wheel index. |
+| `.gitignore` | Keeps generated data and build products out of git: `outputs/`, `*.fits`, `*.zarr/`, `dashboard/build`, `dashboard/dist`. |
 
 ### `configs/`
 | File | Purpose |
 |---|---|
-| `phase1.toml` | Paths (share = `raw_root`, local-copy fallback, `out`), worker count, limb-fit settings, QC thresholds (spikes, seam), calibration choice (fixed pattern high-passed at 8 px), registration grid (1536², r_ref = 690, smoothing window). |
-| `phase2.toml` | Dataset rules: offset pointing only, QC flags that exclude a frame, drop first frame of each block; split dates (train/val/test); run break at gaps > 300 s; context lengths and horizons to index. |
-
-Phase 3 has no config file yet. Its settings are constants in the scripts; this is a known item to
-fix.
+| `phase1.toml` | Archive paths (share), workers, limb fit, QC thresholds, calibration choices (additive pattern high-passed at 8 px, frames used, split-half quality gate), registration grid (1536², r_ref = 690). |
+| `datasets/<name>.toml` | One data set: pointing mode, excluded QC flags, first-frame rule, scope margin, time splits (train/val/test), windows. `v0` offset 23-25 Sep, `c0` centred 19-22 Sep, `smoke` ~1.5 days for quick tests. |
+| `phase3.toml` | Learning: samples (grid, context, horizons, hold-out), background (lambda scan, fit/score radii), models, training (inputs plain/bg, seeds, epochs, optimiser), thermal controller, evaluation (regions, plage rule, baselines, bootstrap), negative controls. |
 
 ### `docs/`
 | File | Purpose |
 |---|---|
-| `DESIGN.md` | Phase 0 technical design: literature, data audit, architecture critique, experiment plan, open decisions. Its status line is outdated (still "Phase 0"). |
-| `PHASE1.md` | Phase 1 report: audit, QC, registration study, EDA. |
-| `PHASE2.md` | Phase 2 report: data source, pointing modes, fixed-pattern calibration, seam and large-scale response (negative self-calibration result), noise floor and oscillation, pointing-response correction, normalisation, baselines, resolution study, skill ceilings (with Phase 3 correction notes), dataset v0, reproduce commands. |
-| `PHASE3.md` | Phase 3 report (provisional): setup, first result, why skill grows with horizon, what survives, corrections to Phase 2, next steps. |
+| `DESIGN.md` | Phase 0 design: literature, data audit, architecture critique, plan (status line outdated). |
+| `PHASE1.md`, `PHASE2.md`, `PHASE3.md` | Phase reports; PHASE2 carries Phase 3 correction notes; PHASE3 §4b-4c the background and centred-mode control. |
 | `PROJECT_BRIEF.md` | This file. |
 
-### `suitdyn/` (the Python package; reusable logic)
+### `suitdyn/` (library)
 | File | Purpose |
 |---|---|
-| `__init__.py` | Package marker. |
-| `config.py` | Loads `configs/phase1.toml` (+ `phase2.toml`), records config hashes and the git state (commit, dirty) in every output's `_meta`, resolves the output folder. |
-| `io.py` | Reads a SUIT FITS file (data + header) and its scale. |
-| `filters.py` | Table of the SUIT science filters (names, wavelengths) from Tripathi et al. 2025. |
-| `manifest.py` | Builds the raw manifest: one row per FITS file with its full header, SHA-256, parsed file name and frame type. Incremental (reuses unchanged rows); skips files still being written. |
-| `geometry.py` | Solar-limb fitting independent of the header: edge points along rays, circle fit plus position-angle harmonics (Level-1 limbs are distorted). |
-| `qc.py` | Per-pixel artefact mask (spikes, seam, off-limb, clipped, no source) and per-frame quality statistics. |
-| `motion.py` | Frame-to-frame image motion by phase correlation, after removing the detector's fixed pattern, which would otherwise lock the correlation at zero shift. |
-| `solar.py` | Solar differential rotation (Snodgrass & Ulrich 1990 magnetic rate, converted to synodic as seen from L1) and the expected disk-centre motion in pixels. |
-| `register.py` | Registration transform following the FITS WCS (CROTA2, CDELT): maps a frame onto the common disk-centred, north-up grid, using the fitted limb centre and radius instead of the header's. |
-| `flat.py` | Estimates and corrects the NB03 detector fixed pattern from the frames themselves: median of the relative residual per detector pixel, with smoothing kept from leaking across the seam. |
-| `largescale.py` | Self-calibration model of the large-scale detector response (log response splines, separate across the seam, plus a limb-darkening profile and per-frame levels). Diagnostic only: it failed validation and is not used. |
-| `response.py` | First-order pointing-response correction: per-pixel sensitivity of brightness to pointing, built on training data and applied as a factor per frame. |
-| `normalize.py` | Normalisation variants (global, per-frame median (adopted), robust percentile, quiet-Sun contrast) and the μ map. |
-| `sequences.py` | Leakage-safe splits (boundaries only inside gaps), (context, horizon) window index, test-split seal, multi-filter burst snapshots. |
-| `store.py` | Zarr training store: calibration, per-frame processing into the registered grid, native QC mask, provenance (file hashes, commit). |
-| `baselines.py` | Forecast baselines on the registered grid: heliographic coordinates, derotation coordinates (optionally with a fitted rotation-rate offset), B0 persistence, B1 rotated persistence, B2 optical-flow extrapolation (dropped). |
-| `metrics.py` | Error metrics on valid pixels: MAE, RMSE, PSNR, SSIM, gradient correlation, bright-region scores. |
-| `ml/__init__.py` | Marks the Phase 3 ML subpackage. |
-| `ml/models.py` | The two forecasters of the B1 residual. UNetSmall stacks frames as channels (differences to the last frame, last frame, mask, μ, horizon). ConvLSTM processes the frames as a sequence. Both have zero-initialised output, so they start as B1. |
+| `__main__.py`, `pipeline.py` | `python -m suitdyn plan/run/status`: stage graph, fingerprints, skip/resume, preflight, lock, transient-only retries, keep-awake, smoke mode, detach. |
+| `config.py` | Settings files, the current data set (`SUITDYN_DATASET`), data-set time span, provenance (git state, config hashes). |
+| `paths.py` | Where every product lives (`outputs/archive`, `outputs/datasets/<name>/...`, `outputs/pipeline/<name>`). |
+| `atomic.py` | Crash-safe writes (temporary file, then rename). |
+| `progress.py` | Live heartbeats for the dashboard (never raises). |
+| `manifest.py` | Raw manifest: header, SHA-256, frame type per file; incremental; span-limited. |
+| `io.py`, `filters.py` | FITS reading; the SUIT filter table. |
+| `geometry.py`, `register.py`, `motion.py`, `qc.py` | Limb fitting, registration transform, image motion with the fixed pattern removed, pixel/frame QC. |
+| `flat.py` | Detector fixed-pattern estimation and correction. |
+| `response.py`, `normalize.py` | Pointing-response correction; normalisation variants and the μ map. |
+| `sequences.py` | Leakage-safe splits, windows, test seal, burst snapshots. |
+| `store.py` | Zarr store of calibrated, registered frames with provenance. |
+| `solar.py`, `baselines.py` | Differential rotation; B0/B1 (NumPy), heliographic geometry, optional rate offset. |
+| `metrics.py` | Error metrics on valid pixels. |
+| `largescale.py` | Large-scale self-calibration (research; failed validation, not used). |
+| `ml/geometry.py` | Derotation on the GPU (tested against the NumPy version). |
+| `ml/data.py` | The frame bank: samples assembled on the fly (plain and background-aware context). |
+| `ml/background.py` | Static background S: mean residual maps, sparse solver, hold-out scoring. |
+| `ml/models.py` | UNetSmall (212k parameters) and ConvLSTM (104k); zero-initialised output = B1. |
+| `ml/thermal.py` | GPU temperature (NVML) and the duty-cycle thermal controller. |
 
-### `scripts/` (entry points, in pipeline order)
-| File | Phase | Purpose |
-|---|---|---|
-| `phase0_audit.py` | 0 | First audit of an archive: inventory of every file, contiguous NB03 segments, pixel statistics of a sample. |
-| `build_manifest.py` | 1 | Builds `outputs/phase1/manifest.parquet` from the share; adds local-copy rows for files not yet on the share (`source` column) and checks checksum conflicts. |
-| `process_frames.py` | 1 | Per-frame measurements: limb fits, artefact counts, seam profiles, image statistics, NB03 frame-to-frame motion, spike persistence. |
-| `registration_study.py` | 1 | Registration study and the adopted per-frame transforms (pointing modes, segments at jumps, limb anchor, smoothing), validation figures and the frame-level QC decision. |
-| `eda.py` | 1 | Exploratory tables and plots: per-filter audit, timelines, cadence, intensity, pointing, geometry, artefacts, sample frames. |
-| `build_sequences.py` | 2 | Dataset v0: frame list with exclusions, time splits, window index, test seal, burst snapshots, summary. |
-| `phase2_calibration.py` | 2 | Fixed-pattern study: stability across halves/days/instrument change, additive vs multiplicative; writes a residual cache. |
-| `phase2_calibration_followup.py` | 2 | Settles the open calibration questions (which spatial scales are a detector pattern, …) and writes the adopted pattern `nb03_pattern_adopted.npy` reproducibly. |
-| `build_store.py` | 2 | Builds a Zarr store (`v0raw` without pattern correction, `v0` with it) of calibrated, registered frames; parallel and resumable. |
-| `phase2_seam.py` | 2 | Seam study (whole-side gain vs local step). Its east–west mirror test turned out invalid because vignetting dominates; this is documented. |
-| `phase2_noise_maps.py` | 2 | Maps of where the instrument sets the one-frame error: noise floor, per-pixel pointing sensitivity, trusted region. |
-| `phase2_response.py` | 2 | Builds the pointing-response correction from training data and validates it on the validation split. |
-| `phase2_floor_origin.py` | 2 | Structure function of the one-frame error; found the ~4–5 min chromospheric oscillation dip. |
-| `phase2_largescale.py` | 2 | Large-scale self-calibration attempt and its validation (negative result, not adopted). |
-| `phase2_baselines.py` | 2 | Noise floor and baselines B0/B1/B2 across horizons and normalisation variants, with block-bootstrap intervals; resolution study. |
-| `verify_dataset.py` | 2 | Checks that every frame of a dataset is present and byte-identical in the current archive (via manifest SHA-256). |
-| `sync_archive.py` | — | One-way checksum-verified mirror of the share to a local copy. Written but unused: we read the share directly. |
-| `phase3_prepare.py` | 3 | Phase 3 cache: 384² frames (response-corrected, median-normalised) and samples (5 derotated context frames + target) for horizons 20/40/80/160, split into train / hold-out (last training run) / val. |
-| `phase3_train.py` | 3 | Trains one model (`--model unet\|convlstm --seed N [--inputs plain\|bg]`): masked L1 on the B1 residual, AdamW + OneCycle, bf16, early stopping on the hold-out; resumable checkpoints; thermal guard. |
-| `phase3_evaluate.py` | 3 | First evaluation on validation (B1, B1-avg, LD and blur variants, linear trend, models, seed ensembles) by region with block-bootstrap intervals. Stale: it predates the limb-darkening fix and needs a rebuild around the background-aware baseline. |
-| `phase3_why_skill.py` | 3 | Diagnostic study of why skill grows with horizon: rotation-rate fit, damping, static mean-residual map, limb-darkening and background variants, background S baseline, scale decomposition, mean correction maps; CPU only. |
-| `phase3_background.py` | 3 | Solves the static background S from derotation residuals of training pairs (sparse least squares with a gradient penalty λ chosen on the hold-out). |
-| `phase3_prepare_bg.py` | 3 | Background-aware samples: each context frame derotated as rot(F − S) + S; checks that without S it reproduces the plain samples. |
+### `scripts/`
+Pipeline stages: `build_manifest.py`, `process_frames.py`, `registration_study.py`, `build_sequences.py`,
+`calibrate_pattern.py`, `build_store.py`, `phase2_noise_maps.py`, `phase2_response.py`,
+`phase3_prepare.py`, `phase3_background.py`, `phase3_train.py`, `phase3_evaluate.py` (each also runs alone
+with `SUITDYN_DATASET=<name>`).
+Checks: `verify_dataset.py` (frames byte-identical in the archive), `compare_registration.py` (a rerun
+leaves a data set's registration unchanged).
+Research studies from Phases 0-2 (not in the pipeline): `phase0_audit.py`, `eda.py`,
+`phase2_calibration.py`, `phase2_calibration_followup.py`, `phase2_seam.py`, `phase2_floor_origin.py`,
+`phase2_largescale.py`, `phase2_baselines.py`, `sync_archive.py` (unused).
 
-### `tests/` (pytest; 21 tests, all for Phase 1–2 code)
-| File | What it checks |
-|---|---|
-| `test_baselines.py` | Disk-centre rotation speed; pixels rotating in from behind the limb are invalid; B1 beats B0 on a synthetic rotating Sun; metric properties. |
-| `test_flat.py` | Seam-aware smoothing does not leak across the seam; a multiplicative pattern is recovered from a moving scene. |
-| `test_geometry.py` | Harmonic limb fit recovers the centre of a distorted, truncated disk; a plain circle is biased by partial coverage. |
-| `test_largescale.py` | The self-calibration recovers a synthetic response with a seam step from two pointings. |
-| `test_manifest.py` | Incremental rebuild keeps every column; files still being written are skipped. |
-| `test_motion.py` | Fixed-pattern removal recovers a sub-pixel shift. |
-| `test_qc.py` | Spikes found without flagging real features; seam step measured. |
-| `test_register.py` | Transform matches astropy WCS; registration centres the disk and normalises the radius. |
-| `test_sequences.py` | Split boundaries inside runs are refused; windows never cross runs or splits; test split sealed; bursts list every filter. |
+### `tests/` (pytest, 36 tests)
+Phase 1-2: baselines, flat, geometry, largescale, manifest (incl. span limits), motion, qc, register,
+sequences. Pipeline and learning: `test_ml_geometry.py` (GPU derotation = NumPy), `test_ml_data_background.py`
+(sample bank; the solver recovers a planted background), `test_ml_thermal.py` (controller with a fake
+sensor), `test_pipeline.py` (skip/rerun logic, upstream propagation, selection, smoke separation, retry
+policy).
+
+### `dashboard/`
+`suitdyn_dashboard.py` (two windows: pipeline control and live feed), `build_exe.cmd`, `make_icon.py`;
+builds `dashboard/dist/SUIT-DYN Dashboard.exe`.
 
 ## 7. Generated outputs (`outputs/`, not in git)
 
 | Folder | Contents |
 |---|---|
-| `phase0/` | Audit tables. |
-| `phase1/` | `manifest.parquet`; per-frame measurements; `registration.parquet`; EDA figures; `calibration/` (adopted fixed pattern). |
-| `phase2/` | `sequences/` (dataset v0), `stores/` (Zarr v0raw, v0), `noise_maps/`, `response/`, baseline results. |
-| `phase3/cache/` | 384² frame cache; samples `X_384.npy` (plain) and `X_384_bg.npy` (background-aware); targets `Y_384.npy`; sample metadata; μ map; trusted region. |
-| `phase3/runs/` | One folder per training run (`best.pt`, `last.pt`, `log.csv`, `run.json` with provenance), plus logs. |
-| `phase3/eval/`, `phase3/why/`, `phase3/background/` | Evaluation tables, diagnostics, figures, the static background S. |
+| `archive/` | Manifest and per-frame measurements (frame-local, shared by every data set). |
+| `datasets/<name>/` | `phase1/` registration, `sequences/`, `calibration/`, `stores/`, `phase2/` noise maps and response, `phase3/` (`cache/` frame cache and sample index, `background/`, `runs/`, `eval/`, smoke variants). |
+| `pipeline/<name>/` | Runner state (one JSON per stage) and per-stage logs. |
+| `logs/progress/` | Live heartbeats for the dashboard. |
 
-## 8. Known weaknesses and next steps
+## 8. Next steps
 
-1. **Adopt the background-aware B1 as the reference.**
-   - Score it on validation.
-   - Finish the quick retraining test on background-aware inputs.
-2. **Engineering clean-up:**
-   - a `configs/phase3.toml`;
-   - move the shared code out of scripts into the `suitdyn` package (scripts currently import other
-     scripts);
-   - tests for the Phase 3 pieces;
-   - a README and fixed requirements.
-3. **Better background:**
-   - S fixed on the detector rather than the registered grid; the vignetting is detector-fixed and
-     pointing drifts ~8 px/day at 384².
-   - Validate it with the centred-mode frames.
-4. **Rebuild the final evaluation:**
-   - strongest baselines and seed ensembles;
-   - a plage definition not biased by vignetting;
-   - negative controls (content shuffle, co-rotation).
-5. **Recompute the Phase 2 numbers** (error growth, ceilings) against the background-aware B1.
-6. **Dataset v1:** add 26 Sep and later as the download proceeds.
-7. **One end-to-end pipeline command and an in-repo detached launcher,** then the final full run.
-8. **Later:** Pipeline B (multi-filter snapshots).
+1. **Pass the smoke test:** the real-data end-to-end run on the `smoke` data set.
+2. **Freeze the method:** run the negative controls on c0 and v0, and settle the background model
+   (detector-fixed S; the outer ring).
+3. **Data cut-off:** choose the final data sets (offset and centred mode, separately) and a cut-off date.
+4. **The final run:** `python -m suitdyn run --dataset <name> --detach` for each final data set,
+   including a one-time controlled unseal of the test split.
+5. **Later:** the short-horizon oscillation experiment, and Pipeline B (multi-filter snapshots).
 
 ## 9. Glossary
 
