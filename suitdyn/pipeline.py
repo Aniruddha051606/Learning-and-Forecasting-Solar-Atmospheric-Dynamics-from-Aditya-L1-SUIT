@@ -73,34 +73,34 @@ def stages(ds, smoke=False):
     p1 = ["configs/phase1.toml"]
     d = p1 + [f"configs/datasets/{ds}.toml"]
     d3 = d + ["configs/phase3.toml"]
-    resp = str(paths.phase2("response", f"response_{ds}.npz", name=ds))
+    resp = str(paths.phase2("response", f"response_{ds}.npz", name=ds, make=False))
     st = [
-        Stage("manifest", "scripts/build_manifest.py", ["--span-of", ds], scope="archive", outputs=[paths.archive("manifest.parquet")],
+        Stage("manifest", "scripts/build_manifest.py", ["--span-of", ds], scope="archive", outputs=[paths.archive("manifest.parquet", make=False)],
               configs=p1, raw=True, retries=2),
         Stage("frames", "scripts/process_frames.py", ["--span-of", ds], deps=["manifest"], scope="archive",
-              outputs=[paths.archive("frames_full.parquet")], configs=p1, raw=True, retries=2, disk_gb=0.3),
+              outputs=[paths.archive("frames_full.parquet", make=False)], configs=p1, raw=True, retries=2, disk_gb=0.3),
         Stage("registration", "scripts/registration_study.py", deps=["frames"],
-              outputs=[paths.phase1("registration.parquet", name=ds)], configs=d, raw=True, retries=1),
+              outputs=[paths.phase1("registration.parquet", name=ds, make=False)], configs=d, raw=True, retries=1),
         Stage("sequences", "scripts/build_sequences.py", deps=["registration"],
-              outputs=[paths.sequences(f, name=ds) for f in ("frames.parquet", "windows.parquet", "test_seal.json")],
+              outputs=[paths.sequences(f, name=ds, make=False) for f in ("frames.parquet", "windows.parquet", "test_seal.json")],
               configs=d),
         Stage("calibration", "scripts/calibrate_pattern.py", deps=["sequences"],
-              outputs=[paths.calibration("nb03_pattern.npy", name=ds)], configs=d, raw=True, retries=1, disk_gb=6),
+              outputs=[paths.calibration("nb03_pattern.npy", name=ds, make=False)], configs=d, raw=True, retries=1, disk_gb=6),
         Stage("store", "scripts/build_store.py", deps=["calibration", "sequences"],
-              outputs=[paths.stores(f"{ds}.frames.parquet", name=ds), paths.stores(f"{ds}.summary.json", name=ds)],
+              outputs=[paths.stores(f"{ds}.frames.parquet", name=ds, make=False), paths.stores(f"{ds}.summary.json", name=ds, make=False)],
               configs=d, raw=True, retries=2, disk_gb=12, resume_arg="--resume"),
         Stage("noise_maps", "scripts/phase2_noise_maps.py", ["--split", "train"], deps=["store"],
-              outputs=[paths.phase2("noise_maps", f"noise_maps_{ds}_train_g2.npz", name=ds)], configs=d),
+              outputs=[paths.phase2("noise_maps", f"noise_maps_{ds}_train_g2.npz", name=ds, make=False)], configs=d),
         Stage("response", "scripts/phase2_response.py", deps=["noise_maps"],
-              outputs=[paths.phase2("response", f"response_{ds}.npz", name=ds)], configs=d),
+              outputs=[paths.phase2("response", f"response_{ds}.npz", name=ds, make=False)], configs=d),
         Stage("noise_maps_resp", "scripts/phase2_noise_maps.py", ["--split", "train", "--response", resp, "--tag", "resp"],
-              deps=["response"], outputs=[paths.phase2("noise_maps", f"noise_maps_{ds}_train_g2_resp.npz", name=ds)],
+              deps=["response"], outputs=[paths.phase2("noise_maps", f"noise_maps_{ds}_train_g2_resp.npz", name=ds, make=False)],
               configs=d),
         Stage("samples", "scripts/phase3_prepare.py", deps=["noise_maps_resp", "response", "store"],
-              outputs=[paths.phase3("cache", f, name=ds) for f in (f"frames_{G}.npy", f"samples_{G}.parquet", "prepare_meta.json")],
+              outputs=[paths.phase3("cache", f, name=ds, make=False) for f in (f"frames_{G}.npy", f"samples_{G}.parquet", "prepare_meta.json")],
               configs=d3, disk_gb=2),
         Stage("background", "scripts/phase3_background.py", deps=["samples"], gpu=True,
-              outputs=[paths.phase3("background", f"static_bg_{G}.npz", name=ds)], configs=d3),
+              outputs=[paths.phase3("background", f"static_bg_{G}.npz", name=ds, make=False)], configs=d3),
     ]
     train = []
     for model in P3["model"]["types"]:
@@ -109,10 +109,10 @@ def stages(ds, smoke=False):
             name = f"train:{model}:{seed}"
             train.append(name)
             st.append(Stage(name, "scripts/phase3_train.py", args, deps=["background"], gpu=True, configs=d3,
-                            outputs=[paths.phase3(runs_dir, f"{model}_{inputs}_s{seed}", "run.json", name=ds)]))
+                            outputs=[paths.phase3(runs_dir, f"{model}_{inputs}_s{seed}", "run.json", name=ds, make=False)]))
     st.append(Stage("evaluate", "scripts/phase3_evaluate.py", ["--max-samples", "64"] if smoke else [], deps=train,
                     gpu=True, configs=d3,
-                    outputs=[paths.phase3("eval_smoke" if smoke else "eval", "summary.csv", name=ds)]))
+                    outputs=[paths.phase3("eval_smoke" if smoke else "eval", "summary.csv", name=ds, make=False)]))
     return {s.name: s for s in st}
 
 
@@ -182,7 +182,7 @@ def fingerprint(stage, fps, ds, smoke):
 
 # ------------------------------------------------------------------------------------------ state
 def state_path(ds, stage):
-    return paths.pipeline("state", stage.replace(":", "_") + ".json", name=ds)
+    return paths.pipeline("state", stage.replace(":", "_") + ".json", name=ds, make=False)
 
 
 def read_state(ds, stage):
@@ -342,7 +342,7 @@ def run_stage(ds, s, fp, smoke, log_dir):
 
 def cmd_run(a):
     ds = a.dataset
-    lock = paths.pipeline("runner.lock", name=ds)
+    lock = paths.pipeline("runner.lock", name=ds, make=False)
     if lock.exists():
         try:
             other = json.loads(lock.read_text())
@@ -359,7 +359,7 @@ def cmd_run(a):
         if problems:
             sys.exit("preflight failed:\n  " + "\n  ".join(problems))
         keep_awake(True)
-        log_dir = paths.pipeline("logs", name=ds)
+        log_dir = paths.pipeline("logs", name=ds)  # created: stage logs are appended here
         t0 = time.time()
         for k, n in enumerate(todo):
             progress.report(f"pipeline {ds}", item=n, i=k, n=len(todo), every_s=0)
@@ -394,7 +394,7 @@ def detach(argv):
     """Restart this command outside the current session: WMI process, new group, no window."""
     args = [a for a in argv if a != "--detach"]
     log = paths.pipeline("logs", "runner.log", name=next((args[i + 1] for i, x in enumerate(args) if x == "--dataset"),
-                                                         config.DATASET))
+                                                         config.DATASET), make=True)
     cmdline = f'cmd.exe /c ""{PY}" -m suitdyn {" ".join(args)} >> "{log}" 2>&1"'
     ps = ("$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{CreateFlags=[uint32](0x200 -bor 0x08000000)}; "
           f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{cmdline.replace(chr(39), chr(39) * 2)}'; "

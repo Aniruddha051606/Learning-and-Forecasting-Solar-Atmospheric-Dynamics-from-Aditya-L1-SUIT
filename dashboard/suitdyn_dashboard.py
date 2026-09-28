@@ -532,7 +532,7 @@ class Collector:
     def _runs(self):
         runs = []
         for rd in sorted(self.root.glob("outputs/datasets/*/phase3/runs*/*")):
-            if not rd.is_dir() or rd.name.startswith("_"):
+            if not rd.is_dir() or rd.name.startswith("_") or not any(rd.iterdir()):
                 continue
             ds = rd.parent.parent.parent.name + (" (smoke)" if rd.parent.name.endswith("smoke") else "")
             r = {"run": rd.name, "dataset": ds, "status": "pending"}

@@ -31,6 +31,7 @@ def test_up_to_date_stage_is_skipped_and_change_reruns(tmp_outputs):
         o.parent.mkdir(parents=True, exist_ok=True)
         o.write_text("x")
     state = pipeline.state_path("c0", "registration")
+    state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(json.dumps({"status": "done", "fingerprint": fps["registration"]}))
     _, _, rows = pipeline.plan("c0")
     assert _row(rows, "registration")["action"] == "skip"
@@ -75,3 +76,8 @@ def test_only_transient_failures_are_retried(tmp_path):
     killed.write_text("full-disk: 1274 to process\n")  # no traceback: killed, power cut, native crash
     assert not pipeline.transient(code_bug)
     assert pipeline.transient(share) and pipeline.transient(killed)
+
+
+def test_planning_has_no_side_effects(tmp_outputs):
+    pipeline.plan("c0")
+    assert not (paths.OUT / "datasets").exists()  # computing paths must not create folders

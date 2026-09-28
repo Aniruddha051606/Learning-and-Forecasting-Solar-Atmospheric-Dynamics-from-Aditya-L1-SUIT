@@ -24,47 +24,49 @@ from . import config
 OUT = config.ROOT / "outputs"
 
 
-def _p(base, parts):
+def _p(base, parts, make=True):
+    """base/parts; with make=True the folder is created (make=False: a pure path, e.g. for planning)."""
     p = base.joinpath(*parts) if parts else base
-    target = p.parent if p.suffix and p.suffix != ".zarr" else p
-    target.mkdir(parents=True, exist_ok=True)
+    if make:
+        target = p.parent if p.suffix and p.suffix != ".zarr" else p
+        target.mkdir(parents=True, exist_ok=True)
     return p
 
 
-def archive(*parts):
-    return _p(OUT / "archive", parts)
+def archive(*parts, make=True):
+    return _p(OUT / "archive", parts, make)
 
 
-def dataset(*parts, name=None):
-    return _p(OUT / "datasets" / (name or config.DATASET), parts)
+def dataset(*parts, name=None, make=True):
+    return _p(OUT / "datasets" / (name or config.DATASET), parts, make)
 
 
-def phase1(*parts, name=None):
-    return dataset("phase1", *parts, name=name)
+def phase1(*parts, name=None, make=True):
+    return dataset("phase1", *parts, name=name, make=make)
 
 
-def calibration(*parts, name=None):
-    return dataset("calibration", *parts, name=name)
+def calibration(*parts, name=None, make=True):
+    return dataset("calibration", *parts, name=name, make=make)
 
 
-def sequences(*parts, name=None):
-    return dataset("sequences", *parts, name=name)
+def sequences(*parts, name=None, make=True):
+    return dataset("sequences", *parts, name=name, make=make)
 
 
-def stores(*parts, name=None):
-    return dataset("stores", *parts, name=name)
+def stores(*parts, name=None, make=True):
+    return dataset("stores", *parts, name=name, make=make)
 
 
-def phase2(*parts, name=None):
-    return dataset("phase2", *parts, name=name)
+def phase2(*parts, name=None, make=True):
+    return dataset("phase2", *parts, name=name, make=make)
 
 
-def phase3(*parts, name=None):
-    return dataset("phase3", *parts, name=name)
+def phase3(*parts, name=None, make=True):
+    return dataset("phase3", *parts, name=name, make=make)
 
 
-def pipeline(*parts, name=None):
-    return _p(OUT / "pipeline" / (name or config.DATASET), parts)
+def pipeline(*parts, name=None, make=True):
+    return _p(OUT / "pipeline" / (name or config.DATASET), parts, make)
 
 
 def progress():
@@ -77,9 +79,9 @@ def smoke():
     return os.environ.get("SUITDYN_SMOKE") == "1"
 
 
-def runs(*parts, name=None):
-    return phase3("runs_smoke" if smoke() else "runs", *parts, name=name)
+def runs(*parts, name=None, make=True):
+    return phase3("runs_smoke" if smoke() else "runs", *parts, name=name, make=make)
 
 
-def evals(*parts, name=None):
-    return phase3("eval_smoke" if smoke() else "eval", *parts, name=name)
+def evals(*parts, name=None, make=True):
+    return phase3("eval_smoke" if smoke() else "eval", *parts, name=name, make=make)
