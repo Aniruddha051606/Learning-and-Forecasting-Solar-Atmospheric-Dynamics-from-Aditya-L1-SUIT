@@ -1,0 +1,25 @@
+# Final data set: pointing cluster centred@1030,1010 (3889 NB03 full-disk frames, 2026-09-18 05:00:58.250485 -> 2026-09-23 05:00:07.947885 UT).
+# Drafted by scripts/propose_splits.py from the pointing-mode scan; chronological splits with each boundary in an
+# observing gap. Rules as data set v0. Products: outputs/datasets/final_centred/.
+
+[dataset]
+pointing_mode = "centred"
+# Pointing cluster from the header scan: centred@1030,1010. Not pinned by name (registration labels clusters from the
+# fitted limb centre, which can round differently); the time span selects it, and build_sequences.py refuses
+# the data set if another pointing appears inside it.
+exclude_flags = ["pointing_mode_change", "limb_outlier", "spike_rate"]
+drop_program_first_frame = true
+
+[scope]
+margin_h = 3
+
+[split]
+embargo_h = 4.0
+train = ["2026-09-18 04:59:00", "2026-09-21 15:36:00"]
+val = ["2026-09-21 15:36:00", "2026-09-22 02:52:00"]
+test = ["2026-09-22 02:52:00", "2026-09-23 05:02:00"]
+
+[sequences]
+max_gap_s = 300
+contexts = [1, 5, 20]
+horizons = [1, 5, 10, 20, 40, 80, 160]

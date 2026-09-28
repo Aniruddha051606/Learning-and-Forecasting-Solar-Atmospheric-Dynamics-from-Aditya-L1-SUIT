@@ -1,0 +1,26 @@
+# Final data set: pointing cluster offset@1280,600 (7777 NB03 full-disk frames, 2026-09-10 06:00:33.699400 -> 2026-09-27 18:58:56.997820 UT).
+# Drafted by scripts/propose_splits.py from the pointing-mode scan; chronological splits with each boundary in an
+# observing gap. Rules as data set v0. Products: outputs/datasets/final_offset/.
+
+[dataset]
+pointing_mode = "offset"
+# Pointing cluster from the header scan: offset@1280,600. Not pinned by name (registration labels clusters from the
+# fitted limb centre, which can round differently); the time span selects it, and build_sequences.py refuses
+# the data set if another pointing appears inside it.
+exclude_flags = ["pointing_mode_change", "limb_outlier", "spike_rate"]
+drop_program_first_frame = true
+
+[scope]
+margin_h = 3
+
+[split]
+embargo_h = 4.0
+train = ["2026-09-10 05:59:00", "2026-09-24 23:48:00"]
+val = ["2026-09-24 23:48:00", "2026-09-26 03:33:00"]
+# ends in the 14:07-17:06 observing gap: 27 Sep was still downloading when this was written (2026-09-28)
+test = ["2026-09-26 03:33:00", "2026-09-27 15:36:00"]
+
+[sequences]
+max_gap_s = 300
+contexts = [1, 5, 20]
+horizons = [1, 5, 10, 20, 40, 80, 160]

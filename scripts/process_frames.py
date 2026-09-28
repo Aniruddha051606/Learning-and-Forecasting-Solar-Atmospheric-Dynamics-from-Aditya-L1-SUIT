@@ -141,6 +141,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="process only the first N frames of each kind (smoke test)")
     ap.add_argument("--full", action="store_true", help="ignore earlier results and process every frame")
     ap.add_argument("--span-of", default=None, help="only frames inside this data set's time span (the rest is kept)")
+    ap.add_argument("--skip-roi", action="store_true", help="do not process ROI frames (the NB03 pipeline never uses them)")
     a = ap.parse_args()
     out = config.out_dir(CFG)
     sig = proc_signature()
@@ -187,7 +188,7 @@ def main():
     for _, r in full[~full.file.isin(done_full)].iterrows():
         p, chk = prev_of.get(r.file, (None, False))
         jobs.append((r.to_dict(), p, chk))
-    roi_todo = roi[~roi.file.isin(done_roi)]
+    roi_todo = roi[~roi.file.isin(done_roi)] if not a.skip_roi else roi.iloc[0:0]
     print(f"full-disk: {len(jobs)} to process, {len(done_full)} reused; ROI: {len(roi_todo)} to process, "
           f"{len(done_roi)} reused", flush=True)
 

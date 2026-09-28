@@ -79,7 +79,7 @@ def stages(ds, smoke=False):
     st = [
         Stage("manifest", "scripts/build_manifest.py", ["--span-of", ds], scope="archive", outputs=[paths.archive("manifest.parquet", make=False)],
               configs=p1, raw=True, retries=2),
-        Stage("frames", "scripts/process_frames.py", ["--span-of", ds], deps=["manifest"], scope="archive",
+        Stage("frames", "scripts/process_frames.py", ["--span-of", ds, "--skip-roi"], deps=["manifest"], scope="archive",
               outputs=[paths.archive("frames_full.parquet", make=False)], configs=p1, raw=True, retries=2, disk_gb=0.3),
         Stage("registration", "scripts/registration_study.py", deps=["frames"],
               outputs=[paths.phase1("registration.parquet", name=ds, make=False)], configs=d, raw=True, retries=1),
@@ -401,8 +401,8 @@ def cmd_status(a):
 def detach(argv):
     """Restart this command outside the current session: WMI process, new group, no window."""
     args = [a for a in argv if a != "--detach"]
-    log = paths.pipeline("logs", "runner.log", name=next((args[i + 1] for i, x in enumerate(args) if x == "--dataset"),
-                                                         config.DATASET), make=True)
+    ds = next((args[i + 1] for i, x in enumerate(args) if x == "--dataset"), config.DATASET)
+    log = paths.pipeline("logs", "runner.log", name=ds.split(",")[0].strip(), make=True)
     cmdline = f'cmd.exe /c ""{PY}" -m suitdyn {" ".join(args)} >> "{log}" 2>&1"'
     ps = ("$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{CreateFlags=[uint32](0x200 -bor 0x08000000)}; "
           f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{cmdline.replace(chr(39), chr(39) * 2)}'; "
@@ -426,8 +426,12 @@ def main(argv=None):
     ap.add_argument("--with-test", action="store_true", help="also the one-time test evaluation (unseals the test split)")
     ap.add_argument("--detach", action="store_true")
     a = ap.parse_args(argv)
-    os.environ["SUITDYN_DATASET"] = a.dataset
-    config.DATASET = a.dataset
     if a.detach and a.command == "run":
         return detach(argv)
-    {"plan": cmd_plan, "run": cmd_run, "status": cmd_status}[a.command](a)
+    # several data sets (--dataset a,b): one after another in this process (they share the archive and the GPU)
+    for ds in [d.strip() for d in a.dataset.split(",") if d.strip()]:
+        os.environ["SUITDYN_DATASET"] = ds
+        config.DATASET = ds
+        a.dataset = ds
+        print(f"===== data set {ds} =====", flush=True)
+        {"plan": cmd_plan, "run": cmd_run, "status": cmd_status}[a.command](a)
