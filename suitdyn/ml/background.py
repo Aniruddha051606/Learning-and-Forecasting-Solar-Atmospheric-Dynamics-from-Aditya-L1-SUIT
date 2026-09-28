@@ -19,12 +19,14 @@ from scipy.sparse.linalg import lsqr
 from .. import baselines
 
 
-def mean_residuals(bank, ids, clip=0.25, batch=16, report=None):
+def mean_residuals(bank, ids, clip=0.25, batch=16, report=None, tick=None):
     """M(H) for each horizon over the given samples (clipped mean; NaN where fewer than half the pairs of
     that horizon are valid), plus the median context times and B0 of those pairs."""
     G = bank.G
     acc = {}
     for n0 in range(0, len(ids), batch):
+        if tick:  # the thermal controller (GPU work)
+            tick()
         b = bank.batch(ids[n0:n0 + batch], "plain")
         r = b["y"][:, 0] - b["x_plain"].mean(1)
         ok = torch.isfinite(r) & (r.abs() < clip)
@@ -111,13 +113,15 @@ def solve(M, ops, pos, lam, x0=None, iter_lim=4000):
     return S, sol[0], {"iterations": int(sol[2]), "istop": int(sol[1]), "fit_rms": fit_rms}
 
 
-def score(bank, ids, S, batch=16, rho_max=None):
+def score(bank, ids, S, batch=16, rho_max=None, tick=None):
     """Median per-horizon MAE of B1-avg and of B1-avg-bgS (= mean_k [rot_k(F_k - S) + S]) on the samples,
     inside rho < rho_max when given (the outer ring is poorly constrained: foreshortening, sources off the disk)."""
     bank.set_background(S)
     inner = None if rho_max is None else bank.mu > float(np.sqrt(1 - rho_max ** 2))
     per = {}
     for n0 in range(0, len(ids), batch):
+        if tick:
+            tick()
         b = bank.batch(ids[n0:n0 + batch], "plain")
         A, Ab, y = b["x_plain"].mean(1), b["x_bg"].mean(1), b["y"][:, 0]
         v = torch.isfinite(A) & torch.isfinite(Ab) & torch.isfinite(y)

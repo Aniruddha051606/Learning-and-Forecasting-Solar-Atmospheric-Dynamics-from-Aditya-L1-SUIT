@@ -24,7 +24,7 @@ import numpy as np  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from suitdyn import atomic, config, paths, progress  # noqa: E402
 from suitdyn.ml import background as bgm  # noqa: E402
-from suitdyn.ml import data  # noqa: E402
+from suitdyn.ml import data, thermal  # noqa: E402
 
 CFG = config.load_dataset()
 P3 = config.load_phase3()
@@ -57,15 +57,18 @@ def main():
     G, r_ref = bank.G, bank.r_ref
     pos = bgm.disk_index(G, r_ref, B["rho_max"])
     train, ho = bank.ids("train"), bank.ids("holdout")
+    TH = P3["thermal"]
+    th = thermal.Thermal(TH["max_c"], TH["resume_c"], TH["target_c"]) if a.device.startswith("cuda") else None
+    tick = th.check if th else None
 
     rep = lambda stage: (lambda i, n: progress.report(stage, item=f"sample {i}", i=i, n=n))  # noqa: E731
-    M_tr, geo_tr = bgm.mean_residuals(bank, train, B["residual_clip"], report=rep("background: M(H) train"))
+    M_tr, geo_tr = bgm.mean_residuals(bank, train, B["residual_clip"], report=rep("background: M(H) train"), tick=tick)
     ops_tr = {h: bgm.horizon_operator(G, r_ref, dts, b0, pos) for h, (dts, b0) in geo_tr.items()}
     scan, x0 = {}, None
     for k, lam in enumerate(B["lambdas"]):
         progress.report("background: lambda scan", item=f"lambda = {lam}", i=k, n=len(B["lambdas"]), every_s=0)
         S, x0, info = bgm.solve(M_tr, ops_tr, pos, lam, x0)
-        sc = bgm.score(bank, ho, S, rho_max=B["score_rho_max"])
+        sc = bgm.score(bank, ho, S, rho_max=B["score_rho_max"], tick=tick)
         gain = {h: 1 - v["B1-avg-bgS"] / v["B1-avg"] for h, v in sc.items()}
         scan[lam] = {"holdout_gain_vs_B1avg": gain, "mean_gain": float(np.mean(list(gain.values()))), **info}
         print(f"lambda {lam}: hold-out gain {({h: round(100 * g, 2) for h, g in sorted(gain.items())})} %", flush=True)
@@ -73,7 +76,7 @@ def main():
     edge = lam in (B["lambdas"][0], B["lambdas"][-1])
 
     both = np.concatenate([train, ho])
-    M, geo = bgm.mean_residuals(bank, both, B["residual_clip"], report=rep("background: M(H) train+holdout"))
+    M, geo = bgm.mean_residuals(bank, both, B["residual_clip"], report=rep("background: M(H) train+holdout"), tick=tick)
     ops = {h: bgm.horizon_operator(G, r_ref, dts, b0, pos) for h, (dts, b0) in geo.items()}
     S, _, info = bgm.solve(M, ops, pos, lam, x0)
     qc, qv = ld_profile(bank, both)
