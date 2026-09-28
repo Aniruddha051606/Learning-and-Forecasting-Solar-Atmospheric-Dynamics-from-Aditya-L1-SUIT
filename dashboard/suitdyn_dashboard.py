@@ -307,6 +307,8 @@ class Collector:
         self.procs, self.procs_t = [], 0.0
         self.preview = {"key": None, "image": None, "hdr": None, "error": None}
         self.want_preview = None
+        self.hist = collections.defaultdict(lambda: collections.deque(maxlen=600))  # 20 min at 2 s
+        self.thumbs = collections.deque(maxlen=8)
         cfg = {}
         try:
             cfg = tomllib.loads((root / "configs" / "phase1.toml").read_text(encoding="utf-8"))
@@ -358,6 +360,9 @@ class Collector:
                     hdr, img = read_fits(path)
                     im = render(img, 900)
                     self.preview = {"key": name, "image": im, "hdr": hdr, "path": path, "error": None, "t": time.time()}
+                    th = im.copy()
+                    th.thumbnail((170, 170))
+                    self.thumbs.append((name, th, hdr.get("DATE-OBS", "")))
                 except Exception as e:
                     self.preview = {"key": name, "image": None, "hdr": None, "path": path, "error": str(e)}
             time.sleep(0.8)
@@ -485,9 +490,15 @@ class Collector:
                     pass
             if not states and not alive:
                 continue
+            smoke = any(j.get("smoke") for j, _ in states.values())
+            try:
+                smoke = smoke or "--smoke" in json.loads(lock.read_text()).get("argv", []) if lock.exists() else smoke
+            except Exception:
+                pass
             try:
                 p3 = tomllib.loads((self.root / "configs" / "phase3.toml").read_text(encoding="utf-8"))
-                trains = [f"train:{m}:{sd_}" for m in p3["model"]["types"] for sd_ in p3["train"]["seeds"]]
+                seeds = p3["train"]["seeds"][:1] if smoke else p3["train"]["seeds"]
+                trains = [f"train:{m}:{sd_}" for m in p3["model"]["types"] for sd_ in seeds]
             except Exception:
                 trains = []
             names = [n for n in PIPELINE_ORDER if n != "train"]
@@ -508,8 +519,12 @@ class Collector:
             log = running_log if running_log and running_log.exists() else dsd / "logs" / "runner.log"
             state = ("running" if alive else "failed" if any(x["status"] in ("failed", "stalled") for x in steps)
                      else "done" if steps and steps[-1]["status"] == "done" else "stopped")
-            out.append({"name": f"pipeline {dsd.name}", "file": str(dsd), "log": str(log), "steps": steps, "state": state,
-                        "log_tail": tail(log, 60000)[-60:] if log.exists() else [],
+            lt = tail(log, 60000) if log.exists() else []
+            heads = [k for k, ln in enumerate(lt) if ln.startswith("===== ")]
+            if heads and log.name != "runner.log":
+                lt = lt[heads[-1]:]  # the current attempt only
+            out.append({"name": f"pipeline {dsd.name}" + (" (smoke)" if smoke else ""), "file": str(dsd), "log": str(log), "steps": steps, "state": state,
+                        "log_tail": lt[-60:],
                         "started": min((x["start"] for x in steps if x.get("start")), default=None),
                         "mtime": max([m for _, m in states.values()] + [lock.stat().st_mtime if lock.exists() else 0])})
         return out
@@ -532,14 +547,18 @@ class Collector:
                     pass
             logf = rd.parent.parent.parent.parent.parent / "pipeline" / rd.parent.parent.parent.name / "logs" / \
                 f"train_{r.get('model', rd.name.split('_')[0])}_{r.get('seed', rd.name.rsplit('s', 1)[-1])}.log"
-            last = None
-            for ln in reversed(tail(logf, 20000)):
+            last, curve = None, []
+            for ln in tail(logf, 400000):
                 if ln.startswith("{") and '"epoch"' in ln:
                     try:
-                        last = json.loads(ln)
-                        break
+                        j = json.loads(ln)
                     except Exception:
-                        pass
+                        continue
+                    if curve and j.get("epoch", 0) <= curve[-1][0]:
+                        curve = []  # a restarted run: keep the latest attempt
+                    curve.append((j.get("epoch", 0), j.get("holdout_skill_vs_B1"), j.get("train_l1")))
+                    last = j
+            r["curve"] = curve
             if last:
                 r["last_epoch"] = last
                 if r["status"] != "done":
@@ -555,6 +574,13 @@ class Collector:
         while True:
             try:
                 snap = {"t": time.time(), "gpu": self.nvml.read(), "cpu": self.cpu.usage(), "ram": ram()}
+                now = snap["t"]
+                for key, val in (("gpu_temp", snap["gpu"].get("temp")), ("gpu_util", snap["gpu"].get("util")),
+                                 ("cpu", snap["cpu"]), ("ram", (snap["ram"] or (None, 1))[0])):
+                    if val is not None:
+                        self.hist[key].append((now, float(val)))
+                snap["hist"] = {k: list(v) for k, v in self.hist.items()}
+                snap["thumbs"] = list(self.thumbs)
                 try:
                     du = shutil.disk_usage(str(self.root))
                     snap["disk"] = (du.free / 1e9, du.total / 1e9)
@@ -566,7 +592,7 @@ class Collector:
                 snap["runs"] = self._runs()
                 with self.lock:
                     snap["days"], snap["index_n"], snap["index_t"] = dict(self.days), len(self.index), self.index_t
-                meta = self.root / "outputs" / "phase1" / "manifest_meta.json"
+                meta = self.root / "outputs" / "archive" / "manifest_meta.json"
                 if meta.exists():
                     try:
                         j = json.loads(meta.read_text(encoding="utf-8"))
@@ -591,20 +617,188 @@ class Collector:
 
 
 # ------------------------------------------------------------------------------------------- UI
+BORDER, INK = "#223050", "#0d1320"
+F_UI, F_MONO = "Segoe UI", "Consolas"
+SERIES = [GOLD, BLUE, GREEN, VIOLET, "#ff9f43", "#48dbfb", RED, "#c8d6e5"]
+SHORT = {"manifest": "Manifest", "frames": "Frames", "registration": "Registration", "sequences": "Splits",
+         "calibration": "Calibration", "store": "Store", "noise_maps": "Noise maps", "response": "Response",
+         "noise_maps_resp": "Trusted", "samples": "Samples", "background": "Background", "train": "Train",
+         "evaluate": "Evaluate"}
+GROUP = {"manifest": "ARCHIVE", "frames": "ARCHIVE", "samples": "LEARNING", "background": "LEARNING",
+         "train": "LEARNING", "evaluate": "LEARNING"}
+
+
+def _mix(c1, c2, a):
+    """c1 blended over c2 with weight a (Tk has no alpha)."""
+    x = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    y = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{int(a * p + (1 - a) * q):02x}" for p, q in zip(x, y))
+
+
 def label(parent, text="", size=10, color=FG, bold=False, bg=PANEL, **kw):
-    return tk.Label(parent, text=text, fg=color, bg=bg, font=("Segoe UI", size, "bold" if bold else "normal"), **kw)
+    return tk.Label(parent, text=text, fg=color, bg=bg, font=(F_UI, size, "bold" if bold else "normal"), **kw)
 
 
-def panel(parent, title, **kw):
-    f = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground="#22304a", **kw)
+def card(parent, title=None, accent=GOLD):
+    outer = tk.Frame(parent, bg=BORDER)
+    inner = tk.Frame(outer, bg=PANEL)
+    inner.pack(fill="both", expand=True, padx=1, pady=1)
     if title:
-        label(f, title.upper(), 9, DIM, True).pack(anchor="w", padx=10, pady=(8, 2))
-    return f
+        hdr = tk.Frame(inner, bg=PANEL)
+        hdr.pack(fill="x", padx=12, pady=(9, 2))
+        tk.Frame(hdr, bg=accent, width=3, height=14).pack(side="left", padx=(0, 8))
+        label(hdr, title.upper(), 9, DIM, True).pack(side="left")
+        inner.hdr = hdr
+    return outer, inner
+
+
+def panel(parent, title, **kw):  # kept for the network drawing helpers
+    return card(parent, title)[1]
+
+
+def round_rect(cv, x0, y0, x1, y1, r=10, **kw):
+    pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1, x0, y1,
+           x0, y1 - r, x0, y0 + r, x0, y0]
+    return cv.create_polygon(pts, smooth=True, **kw)
+
+
+def sparkline(cv, series, color, vmin=None, vmax=None):
+    cv.delete("all")
+    w, h = cv.winfo_width(), cv.winfo_height()
+    if w < 20 or len(series) < 2:
+        return
+    t, v = [p[0] for p in series], [p[1] for p in series]
+    lo = min(v) if vmin is None else vmin
+    hi = max(v) if vmax is None else vmax
+    hi = hi if hi - lo > 1e-9 else lo + 1
+    t0, t1 = t[0], max(t[-1], t[0] + 1)
+    pts = []
+    for ti, vi in zip(t, v):
+        pts += [2 + (w - 4) * (ti - t0) / (t1 - t0), h - 3 - (h - 6) * (min(max(vi, lo), hi) - lo) / (hi - lo)]
+    cv.create_polygon([2, h - 2] + pts + [pts[-2], h - 2], fill=_mix(color, PANEL, 0.22), outline="")
+    cv.create_line(pts, fill=color, width=1.6)
 
 
 def fullscreen_keys(win):
     win.bind("<F11>", lambda e: win.attributes("-fullscreen", not win.attributes("-fullscreen")))
     win.bind("<Escape>", lambda e: win.attributes("-fullscreen", False))
+
+
+def style_ttk():
+    st = ttk.Style()
+    st.theme_use("clam")
+    st.configure("D.Treeview", background=PANEL, fieldbackground=PANEL, foreground=FG, rowheight=25,
+                 font=(F_UI, 9), borderwidth=0)
+    st.configure("D.Treeview.Heading", background=PANEL2, foreground=DIM, font=(F_UI, 9, "bold"), borderwidth=0,
+                 relief="flat")
+    st.map("D.Treeview", background=[("selected", "#243554")])
+    st.configure("Gold.Horizontal.TProgressbar", troughcolor=INK, background=GOLD, borderwidth=0, thickness=14,
+                 lightcolor=GOLD, darkcolor=GOLD)
+    st.configure("D.TCombobox", fieldbackground=PANEL2, background=PANEL2, foreground=FG, arrowcolor=GOLD,
+                 bordercolor=BORDER, lightcolor=PANEL2, darkcolor=PANEL2)
+    st.map("D.TCombobox", fieldbackground=[("readonly", PANEL2)], foreground=[("readonly", FG)],
+           selectbackground=[("readonly", PANEL2)], selectforeground=[("readonly", GOLD)])
+    return st
+
+
+def tree(parent, cols, widths, height, stretch=()):
+    tv = ttk.Treeview(parent, columns=cols, show="headings", style="D.Treeview", height=height)
+    for c, wd in zip(cols, widths):
+        tv.heading(c, text=c.upper())
+        tv.column(c, width=wd, anchor="w", stretch=c in stretch)
+    for sname, colr in STATUS_COLOR.items():
+        tv.tag_configure(sname, foreground=colr)
+    tv.tag_configure("partial", foreground=BLUE)
+    return tv
+
+
+def group_steps(steps):
+    """The stage-flow nodes: every stage, with the training runs merged into one 'train' node."""
+    nodes, trains = [], [s for s in steps if s["name"].startswith("train:")]
+    for s in steps:
+        if s["name"].startswith("train:"):
+            if not any(n["key"] == "train" for n in nodes):
+                sts = [t["status"] for t in trains]
+                st = ("failed" if any(x in ("failed", "stalled") for x in sts) else "running" if "running" in sts
+                      else "done" if sts and all(x == "done" for x in sts) else "pending")
+                starts = [t["start"] for t in trains if t.get("start")]
+                ends = [t.get("end") for t in trains if t.get("end")]
+                nodes.append({"key": "train", "status": st, "label": f"Train {sum(x == 'done' for x in sts)}/{len(sts)}",
+                              "start": min(starts) if starts else None,
+                              "end": max(ends) if ends and st == "done" else None})
+            continue
+        nodes.append({"key": s["name"], "status": s["status"], "label": SHORT.get(s["name"], s["name"]),
+                      "start": s.get("start"), "end": s.get("end")})
+    return nodes
+
+
+def draw_flow(cv, steps, pulse):
+    cv.delete("all")
+    w, h = cv.winfo_width(), cv.winfo_height()
+    nodes = group_steps(steps)
+    if w < 100 or not nodes:
+        cv.create_text(w / 2, h / 2, text="no pipeline run yet — python -m suitdyn run --dataset <name>", fill=DIM,
+                       font=(F_UI, 11))
+        return
+    n = len(nodes)
+    gap = (w - 30) / n
+    bw, bh, y0 = min(118, gap - 12), 46, 44
+    xs = [15 + gap * k + (gap - bw) / 2 for k in range(n)]
+    # group bands
+    k = 0
+    while k < n:
+        g = GROUP.get(nodes[k]["key"], "DATA SET")
+        j = k
+        while j + 1 < n and GROUP.get(nodes[j + 1]["key"], "DATA SET") == g:
+            j += 1
+        cv.create_line(xs[k], 26, xs[j] + bw, 26, fill=_mix(GOLD, PANEL, 0.45), width=2)
+        cv.create_text(xs[k], 14, text=g, anchor="w", fill=DIM, font=(F_UI, 8, "bold"))
+        k = j + 1
+    for k in range(n - 1):
+        colr = GREEN if nodes[k]["status"] == "done" else BORDER
+        cv.create_line(xs[k] + bw, y0 + bh / 2, xs[k + 1], y0 + bh / 2, fill=colr, width=2)
+    for k, nd in enumerate(nodes):
+        colr = STATUS_COLOR.get(nd["status"], GREY)
+        running = nd["status"] == "running"
+        round_rect(cv, xs[k], y0, xs[k] + bw, y0 + bh, 12, fill=_mix(colr, PANEL, 0.18 if nd["status"] != "pending" else 0.06),
+                   outline=(GOLD if pulse else colr) if running else colr, width=3 if running and pulse else 1.5)
+        cv.create_text(xs[k] + bw / 2, y0 + 17, text=nd["label"], fill=FG, font=(F_UI, 9, "bold"))
+        cv.create_text(xs[k] + bw / 2, y0 + 33, text=f"{STATUS_ICON.get(nd['status'], '')} {nd['status']}", fill=colr,
+                       font=(F_UI, 8))
+        if nd.get("start"):
+            dur = (nd.get("end") or time.time()) - nd["start"]
+            cv.create_text(xs[k] + bw / 2, y0 + bh + 13, text=fmt_dur(dur), fill=DIM, font=(F_UI, 8))
+
+
+def draw_curves(cv, runs):
+    cv.delete("all")
+    w, h = cv.winfo_width(), cv.winfo_height()
+    runs = [r for r in runs if r.get("curve")][-6:]
+    if w < 60 or not runs:
+        cv.create_text(w / 2, h / 2, text="no training curve yet", fill=DIM, font=(F_UI, 10))
+        return
+    L, R, T, B = 44, 12, 12, 26
+    vals = [c[1] for r in runs for c in r["curve"] if c[1] is not None]
+    lo, hi = min(vals + [0.0]), max(vals + [0.05])
+    emax = max(c[0] for r in runs for c in r["curve"]) + 1
+    X = lambda e: L + (w - L - R) * e / max(emax - 1, 1)  # noqa: E731
+    Y = lambda v: h - B - (h - T - B) * (v - lo) / (hi - lo + 1e-9)  # noqa: E731
+    for f in (0, 0.5, 1):
+        v = lo + f * (hi - lo)
+        cv.create_line(L, Y(v), w - R, Y(v), fill=BORDER)
+        cv.create_text(L - 6, Y(v), text=f"{100 * v:.0f}%", anchor="e", fill=DIM, font=(F_UI, 8))
+    cv.create_text(L, h - 8, text="epoch", anchor="w", fill=DIM, font=(F_UI, 8))
+    cv.create_text(w - R, h - 8, text="hold-out skill vs its B1", anchor="e", fill=DIM, font=(F_UI, 8))
+    for k, r in enumerate(runs):
+        pts = [(X(e), Y(v)) for e, v, _ in r["curve"] if v is not None]
+        colr = SERIES[k % len(SERIES)]
+        if len(pts) > 1:
+            cv.create_line([c for p in pts for c in p], fill=colr, width=2)
+        for x, y in pts:
+            cv.create_oval(x - 2.5, y - 2.5, x + 2.5, y + 2.5, fill=colr, outline="")
+        if pts:
+            cv.create_text(pts[-1][0] - 4, pts[-1][1] - 9, text=f"{r['run']} ({r['dataset']})", anchor="e", fill=colr,
+                           font=(F_UI, 8))
 
 
 def draw_networks(cv, w):
@@ -652,10 +846,10 @@ def draw_networks(cv, w):
     cv.create_text(10, y + 170, anchor="nw", fill=DIM, font=("Segoe UI", 8),
                    text="blocks: 2× (conv3×3 → GroupNorm → GELU) · avg-pool down · bilinear up · skip concat (green)")
 
-    y += 196
+    y += 190
     cv.create_text(10, y, anchor="nw", text="ConvLSTM — 103,969 parameters (frames as a sequence)", fill=GOLD,
                    font=("Segoe UI", 11, "bold"))
-    y += 26
+    y += 46
     bw2 = (w - 60) / 7
     xs = [10 + k * (bw2 + 8) for k in range(7)]
     box(xs[0], y, bw2, bh, "step k = 1…5", "4 ch · 384²", GOLD)
@@ -681,313 +875,403 @@ def draw_networks(cv, w):
 
 
 class PipelineWindow:
+    TILES = (("gpu_temp", "GPU temperature", GOLD), ("gpu_util", "GPU load", BLUE), ("cpu", "CPU", GREEN),
+             ("ram", "Memory", VIOLET), ("disk", "Disk D:", "#48dbfb"), ("data", "Data on the share", "#ff9f43"))
+
     def __init__(self, tkroot, col):
-        self.col = col
+        self.col, self.pulse, self.sel = col, False, None
         w = self.w = tkroot
         w.title("SUIT-DYN · Pipeline control")
         w.configure(bg=BG)
-        w.geometry("1680x1000+0+0")
+        w.geometry("1720x1020+0+0")
+        w.minsize(1280, 820)
         fullscreen_keys(w)
-        top = tk.Frame(w, bg=BG)
-        top.pack(fill="x", padx=12, pady=(10, 4))
-        label(top, "☀ SUIT-DYN  ·  MISSION CONTROL", 18, GOLD, True, bg=BG).pack(side="left")
-        label(top, "  Aditya-L1 / SUIT · NB03 Mg II k 279.6 nm · forecasting the chromosphere", 11, DIM, bg=BG).pack(side="left")
-        self.clock = label(top, "", 14, FG, True, bg=BG)
-        self.clock.pack(side="right")
+        style_ttk()
 
-        strip = tk.Frame(w, bg=BG)
-        strip.pack(fill="x", padx=12, pady=4)
-        self.tiles = {}
-        for key, title in (("gpu", "GPU"), ("gpuload", "GPU LOAD"), ("cpu", "CPU"), ("ram", "RAM"), ("disk", "DISK D:"),
-                           ("data", "DATA ON SHARE"), ("chain", "ACTIVE CHAIN")):
-            f = panel(strip, title)
-            f.pack(side="left", fill="both", expand=True, padx=4)
-            v = label(f, "…", 16, FG, True)
-            v.pack(anchor="w", padx=10)
-            s = label(f, "", 8, DIM)
-            s.pack(anchor="w", padx=10, pady=(0, 8))
-            self.tiles[key] = (v, s)
+        top = tk.Frame(w, bg=BG)
+        top.pack(fill="x", padx=16, pady=(12, 6))
+        label(top, "☀", 24, GOLD, bg=BG).pack(side="left")
+        tt = tk.Frame(top, bg=BG)
+        tt.pack(side="left", padx=(8, 0))
+        label(tt, "SUIT-DYN  MISSION CONTROL", 17, FG, True, bg=BG).pack(anchor="w")
+        label(tt, "Aditya-L1 / SUIT · NB03 Mg II k 279.6 nm · forecasting the chromosphere", 9, DIM, bg=BG).pack(anchor="w")
+        self.clock = label(top, "", 16, FG, True, bg=BG)
+        self.clock.pack(side="right")
+        self.pill = tk.Label(top, text="IDLE", bg=GREY, fg=BG, font=(F_UI, 10, "bold"), padx=14, pady=4)
+        self.pill.pack(side="right", padx=14)
+        self.dsvar = tk.StringVar()
+        self.dsbox = ttk.Combobox(top, textvariable=self.dsvar, state="readonly", width=22, style="D.TCombobox",
+                                  font=(F_UI, 10))
+        self.dsbox.pack(side="right", padx=6)
+        self.dsbox.bind("<<ComboboxSelected>>", lambda e: setattr(self, "sel", self.dsvar.get()))
+        label(top, "pipeline", 9, DIM, bg=BG).pack(side="right")
+
+        o, flow = card(w, "Stage flow", GOLD)
+        o.pack(fill="x", padx=16, pady=4)
+        self.flow = tk.Canvas(flow, bg=PANEL, height=118, highlightthickness=0)
+        self.flow.pack(fill="x", padx=10, pady=(0, 8))
+        self.overall = label(flow.hdr, "", 9, DIM)
+        self.overall.pack(side="right")
 
         body = tk.Frame(w, bg=BG)
-        body.pack(fill="both", expand=True, padx=12, pady=4)
-        left = tk.Frame(body, bg=BG)
-        left.pack(side="left", fill="both", expand=True)
-        right = tk.Frame(body, bg=BG, width=760)
-        right.pack(side="right", fill="both", padx=(8, 0))
-        right.pack_propagate(False)
+        body.pack(fill="both", expand=True, padx=16, pady=(4, 12))
+        body.columnconfigure(0, weight=13)
+        body.columnconfigure(1, weight=9)
+        body.rowconfigure(0, weight=1)
+        left, right = tk.Frame(body, bg=BG), tk.Frame(body, bg=BG)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right.grid(row=0, column=1, sticky="nsew")
 
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("D.Treeview", background=PANEL, fieldbackground=PANEL, foreground=FG, rowheight=24,
-                        font=("Segoe UI", 9), borderwidth=0)
-        style.configure("D.Treeview.Heading", background=PANEL2, foreground=DIM, font=("Segoe UI", 9, "bold"),
-                        borderwidth=0)
-        style.map("D.Treeview", background=[("selected", "#243554")])
-        style.configure("D.Horizontal.TProgressbar", troughcolor=PANEL2, background=GOLD, borderwidth=0, thickness=18)
+        # current stage
+        o, cur = card(left, "Now running", BLUE)
+        o.pack(fill="x")
+        self.cur_name = label(cur, "", 15, FG, True)
+        self.cur_name.pack(anchor="w", padx=14)
+        self.cur_cmd = tk.Label(cur, text="", fg=DIM, bg=PANEL, font=(F_MONO, 9))
+        self.cur_cmd.pack(anchor="w", padx=14)
+        self.cur_item = label(cur, "", 10, FG)
+        self.cur_item.pack(anchor="w", padx=14, pady=(6, 2))
+        self.cur_bar = ttk.Progressbar(cur, style="Gold.Horizontal.TProgressbar", maximum=1000)
+        self.cur_bar.pack(fill="x", padx=14)
+        self.cur_stats = label(cur, "", 9, DIM)
+        self.cur_stats.pack(anchor="w", padx=14, pady=(3, 10))
 
-        p1 = panel(left, "Active chain — steps, status, exact commands")
-        p1.pack(fill="both", expand=True)
-        self.chain_title = label(p1, "", 10, FG, True)
-        self.chain_title.pack(anchor="w", padx=10)
-        cols = ("status", "step", "dataset", "start", "duration", "command")
-        self.tv = ttk.Treeview(p1, columns=cols, show="headings", style="D.Treeview", height=13)
-        for c, wd in zip(cols, (90, 190, 60, 80, 90, 520)):
-            self.tv.heading(c, text=c.upper())
-            self.tv.column(c, width=wd, anchor="w", stretch=c == "command")
-        for s, c in STATUS_COLOR.items():
-            self.tv.tag_configure(s, foreground=c)
-        self.tv.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        o, st = card(left, "Stages", GREEN)
+        o.pack(fill="both", expand=True, pady=(8, 0))
+        self.tv = tree(st, ("stage", "status", "started", "duration", "tries", "command"), (140, 90, 70, 75, 45, 360), 11,
+                       ("command",))
+        self.tv.pack(fill="both", expand=True, padx=10, pady=(4, 10))
 
-        p2 = panel(left, "Full pipeline reference")
-        p2.pack(fill="both", expand=True, pady=(8, 0))
-        cols2 = ("phase", "stage", "status", "command", "what")
-        self.tv2 = ttk.Treeview(p2, columns=cols2, show="headings", style="D.Treeview", height=10)
-        for c, wd in zip(cols2, (70, 180, 80, 420, 330)):
-            self.tv2.heading(c, text=c.upper())
-            self.tv2.column(c, width=wd, anchor="w", stretch=c in ("command", "what"))
-        for s, c in STATUS_COLOR.items():
-            self.tv2.tag_configure(s, foreground=c)
-        self.tv2.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-
-        p3 = panel(left, "Chain log (tail)")
-        p3.pack(fill="both", expand=False, pady=(8, 0))
-        self.log = tk.Text(p3, height=9, bg="#0d1320", fg="#b9c6db", font=("Consolas", 9), relief="flat",
+        o, lg = card(left, "Log", GREY)
+        o.pack(fill="x", pady=(8, 0))
+        self.log = tk.Text(lg, height=10, bg=INK, fg="#b9c6db", font=(F_MONO, 9), relief="flat", wrap="none",
                            insertbackground=FG)
-        self.log.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        self.log.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.log.tag_configure("err", foreground=RED)
+        self.log.tag_configure("ok", foreground=GREEN)
+        self.log.tag_configure("head", foreground=GOLD)
 
-        p4 = panel(right, "Neural networks")
-        p4.pack(fill="x")
-        self.cv = tk.Canvas(p4, bg=PANEL, height=440, highlightthickness=0)
-        self.cv.pack(fill="x", padx=6, pady=6)
+        # right column: system, networks, training
+        o, sysc = card(right, "System", VIOLET)
+        o.pack(fill="x")
+        grid = tk.Frame(sysc, bg=PANEL)
+        grid.pack(fill="x", padx=8, pady=(2, 8))
+        self.tiles = {}
+        for k, (key, title, colr) in enumerate(self.TILES):
+            f = tk.Frame(grid, bg=PANEL2, highlightthickness=0)
+            f.grid(row=k // 3, column=k % 3, sticky="nsew", padx=4, pady=4)
+            grid.columnconfigure(k % 3, weight=1)
+            label(f, title, 8, DIM, bg=PANEL2).pack(anchor="w", padx=10, pady=(6, 0))
+            v = label(f, "…", 17, colr, True, bg=PANEL2)
+            v.pack(anchor="w", padx=10)
+            sub = label(f, "", 8, DIM, bg=PANEL2)
+            sub.pack(anchor="w", padx=10)
+            cv = tk.Canvas(f, bg=PANEL2, height=30, highlightthickness=0)
+            cv.pack(fill="x", padx=6, pady=(0, 6))
+            self.tiles[key] = (v, sub, cv, colr)
+
+        o, nn = card(right, "Neural networks", GOLD)
+        o.pack(fill="x", pady=(8, 0))
+        self.cv = tk.Canvas(nn, bg=PANEL, height=430, highlightthickness=0)
+        self.cv.pack(fill="x", padx=6, pady=(0, 6))
         self.cv.bind("<Configure>", lambda e: draw_networks(self.cv, e.width))
 
-        p5 = panel(right, "Training runs (Phase 3)")
-        p5.pack(fill="both", expand=True, pady=(8, 0))
-        cols3 = ("run", "data", "inputs", "status", "epochs", "best", "skill", "gpu peak")
-        self.tv3 = ttk.Treeview(p5, columns=cols3, show="headings", style="D.Treeview", height=8)
-        for c, wd in zip(cols3, (130, 50, 55, 70, 60, 50, 70, 70)):
-            self.tv3.heading(c, text=c.upper())
-            self.tv3.column(c, width=wd, anchor="w")
-        for s, c in (("done", GREEN), ("partial", BLUE), ("pending", GREY)):
-            self.tv3.tag_configure(s, foreground=c)
+        o, trc = card(right, "Training", BLUE)
+        o.pack(fill="both", expand=True, pady=(8, 0))
+        self.curves = tk.Canvas(trc, bg=PANEL, height=150, highlightthickness=0)
+        self.curves.pack(fill="x", padx=8)
+        self.tv3 = tree(trc, ("run", "data", "inputs", "status", "epochs", "best", "skill", "peak °C"),
+                        (120, 90, 50, 65, 55, 45, 60, 60), 5)
         self.tv3.pack(fill="both", expand=True, padx=8, pady=(4, 4))
-        self.train_live = label(p5, "", 9, BLUE)
-        self.train_live.pack(anchor="w", padx=10, pady=(0, 8))
+        self.train_live = label(trc, "", 9, BLUE)
+        self.train_live.pack(anchor="w", padx=12, pady=(0, 8))
+
+    def _chain(self, s):
+        chains = s.get("chains") or []
+        names = [c["name"] for c in chains]
+        if list(self.dsbox["values"]) != names:
+            self.dsbox["values"] = names
+        if self.sel not in names:
+            self.sel = names[0] if names else None
+        if self.sel and self.dsvar.get() != self.sel:
+            self.dsvar.set(self.sel)
+        return next((c for c in chains if c["name"] == self.sel), None)
 
     def refresh(self, s):
+        self.pulse = not self.pulse
         self.clock.config(text=datetime.now().strftime("%a %d %b  %H:%M:%S"))
+        hist = s.get("hist") or {}
         g = s.get("gpu") or {}
         t = g.get("temp")
-        self.tiles["gpu"][0].config(text=f"{t} °C" if t is not None else "n/a",
-                                    fg=RED if (t or 0) >= 85 else GOLD if (t or 0) >= 76 else GREEN)
-        self.tiles["gpu"][1].config(text=g.get("name", ""))
-        self.tiles["gpuload"][0].config(text=f"{g.get('util', 0)} %" if g else "n/a")
-        self.tiles["gpuload"][1].config(text=f"{g.get('power_w', 0):.0f} W · {g.get('mem_used_gb', 0):.1f}/"
-                                             f"{g.get('mem_total_gb', 0):.1f} GB" if g else "")
+        v, sub, cv, colr = self.tiles["gpu_temp"]
+        v.config(text=f"{t} °C" if t is not None else "n/a", fg=RED if (t or 0) >= 85 else GOLD if (t or 0) >= 76 else GREEN)
+        sub.config(text=g.get("name", "").replace("NVIDIA GeForce ", ""))
+        sparkline(cv, hist.get("gpu_temp", []), colr, 40, 95)
+        v, sub, cv, colr = self.tiles["gpu_util"]
+        v.config(text=f"{g.get('util', 0)} %" if g else "n/a")
+        sub.config(text=f"{g.get('power_w', 0):.0f} W · {g.get('mem_used_gb', 0):.1f}/{g.get('mem_total_gb', 0):.1f} GB" if g else "")
+        sparkline(cv, hist.get("gpu_util", []), colr, 0, 100)
         c = s.get("cpu")
-        self.tiles["cpu"][0].config(text=f"{c:.0f} %" if c is not None else "…")
+        v, sub, cv, colr = self.tiles["cpu"]
+        v.config(text=f"{c:.0f} %" if c is not None else "…")
+        npr = len(s.get("procs") or [])
+        sub.config(text=f"{npr} pipeline process{'es' if npr != 1 else ''}")
+        sparkline(cv, hist.get("cpu", []), colr, 0, 100)
         r = s.get("ram")
+        v, sub, cv, colr = self.tiles["ram"]
         if r:
-            self.tiles["ram"][0].config(text=f"{r[0]:.1f} GB")
-            self.tiles["ram"][1].config(text=f"of {r[1]:.1f} GB")
+            v.config(text=f"{r[0]:.1f} GB")
+            sub.config(text=f"of {r[1]:.1f} GB")
+            sparkline(cv, hist.get("ram", []), colr, 0, r[1])
         d = s.get("disk")
+        v, sub, cv, colr = self.tiles["disk"]
         if d:
-            self.tiles["disk"][0].config(text=f"{d[0]:.0f} GB free", fg=RED if d[0] < 15 else FG)
-            self.tiles["disk"][1].config(text=f"of {d[1]:.0f} GB")
+            v.config(text=f"{d[0]:.0f} GB free", fg=RED if d[0] < 15 else colr)
+            sub.config(text=f"of {d[1]:.0f} GB")
+            cv.delete("all")
+            ww = cv.winfo_width()
+            cv.create_rectangle(4, 10, ww - 4, 20, fill=INK, outline="")
+            cv.create_rectangle(4, 10, 4 + (ww - 8) * (1 - d[0] / d[1]), 20, fill=colr, outline="")
         days = s.get("days") or {}
+        v, sub, cv, colr = self.tiles["data"]
         if days:
-            n_all = sum(v for (dd, nb), v in days.items())
-            n_nb = sum(v for (dd, nb), v in days.items() if nb)
             ds = sorted({dd for dd, _ in days})
-            self.tiles["data"][0].config(text=f"{n_all:,} files")
-            self.tiles["data"][1].config(text=f"{ds[0]} → {ds[-1]} · {len(ds)} days · NB03 {n_nb:,}")
+            v.config(text=f"{sum(days.values()):,} files")
+            sub.config(text=f"{ds[0][5:]} → {ds[-1][5:]} · {len(ds)} days")
+            cv.delete("all")
+            per = [sum(v_ for (dd, _), v_ in days.items() if dd == day) for day in ds]
+            ww, top_ = cv.winfo_width(), max(per)
+            bwid = (ww - 8) / max(len(per), 1)
+            for k, n_ in enumerate(per):
+                cv.create_rectangle(4 + k * bwid + 1, 28 - 24 * n_ / top_, 4 + (k + 1) * bwid - 1, 28, fill=colr, outline="")
         else:
-            self.tiles["data"][0].config(text="indexing…")
-        chains = s.get("chains") or []
-        if chains:
-            ch = chains[0]
-            col = {"done": GREEN, "failed": RED, "stalled": RED, "running": BLUE}.get(ch["state"], DIM)
-            self.tiles["chain"][0].config(text=ch["state"].upper(), fg=col)
-            el = (time.time() if ch["state"] == "running" else max((st.get("end") or 0) for st in ch["steps"]) or time.time()) \
-                - (ch.get("started") or time.time())
-            self.tiles["chain"][1].config(text=f"{ch['name']} · {fmt_dur(el)}")
-            self.chain_title.config(text=f"{ch['name']}   ({ch['file']})")
-            self.tv.delete(*self.tv.get_children())
-            for st in ch["steps"]:
-                dur = (st.get("end") or time.time()) - st["start"] if st.get("start") else None
-                self.tv.insert("", "end", tags=(st["status"],), values=(
-                    f"{STATUS_ICON[st['status']]} {st['status']}", st["name"], st["dataset"],
-                    datetime.fromtimestamp(st["start"]).strftime("%H:%M:%S") if st.get("start") else "",
-                    fmt_dur(dur), st["cmd"]))
-            self.log.delete("1.0", "end")
-            self.log.insert("end", "\n".join(ch["log_tail"][-40:]))
-            self.log.see("end")
-        # reference: status of each catalogue stage from the active chain and live heartbeats
-        status = {}
-        for ch in chains[:1]:
-            for st in ch["steps"]:
-                cat = catalogue_stage(st["name"])
-                if cat:
-                    status[cat] = st["status"]
-        for b in s.get("beats") or []:
-            cat = catalogue_stage(b.get("stage"))
-            if cat and b["alive"]:
-                status[cat] = "running"
-            if (b.get("stage") or "").startswith("train") and b["alive"]:
-                status["Train UNet" if "unet" in b["stage"] else "Train ConvLSTM"] = "running"
-        self.tv2.delete(*self.tv2.get_children())
-        for ph, name, cmd, what in CATALOGUE:
-            st = status.get(name, "")
-            self.tv2.insert("", "end", tags=(st,) if st else (), values=(
-                ph, name, f"{STATUS_ICON[st]} {st}" if st else "", cmd, what))
+            v.config(text="indexing…")
+
+        ch = self._chain(s)
+        steps = ch["steps"] if ch else []
+        draw_flow(self.flow, steps, self.pulse)
+        state = ch["state"] if ch else "idle"
+        pc = {"running": BLUE, "done": GREEN, "failed": RED, "stalled": RED}.get(state, GREY)
+        self.pill.config(text=state.upper(), bg=pc)
+        ndone = sum(x["status"] == "done" for x in steps)
+        self.overall.config(text=f"{ndone}/{len(steps)} stages done" + (
+            f" · started {datetime.fromtimestamp(ch['started']).strftime('%d %b %H:%M')}" if ch and ch.get("started") else ""))
+
+        # now running
+        run = next((x for x in steps if x["status"] in ("running", "stalled")), None) or \
+            next((x for x in steps if x["status"] == "failed"), None)
+        ds_name = (ch or {}).get("file", "").replace("\\", "/").rsplit("/", 1)[-1]
+        beats = [b for b in s.get("beats") or [] if b["alive"] and b.get("dataset") == ds_name
+                 and not (b.get("stage") or "").startswith("pipeline")]
+        if run:
+            self.cur_name.config(text=f"{STATUS_ICON[run['status']]} {run['name']}", fg=STATUS_COLOR[run["status"]])
+            self.cur_cmd.config(text=run["cmd"])
+        else:
+            self.cur_name.config(text="nothing running" if state != "done" else "✔ pipeline complete", fg=DIM if state != "done" else GREEN)
+            self.cur_cmd.config(text="")
+        if beats:
+            b = beats[0]
+            i, n = b.get("i"), b.get("n")
+            self.cur_item.config(text=f"{b.get('stage')} · {b.get('item') or ''}")
+            self.cur_bar["value"] = 1000 * (i + 1) / n if i is not None and n else 0
+            rate, eta = b.get("rate"), b.get("eta")
+            self.cur_stats.config(text=(f"{i + 1:,} / {n:,}  ({100 * (i + 1) / n:.1f} %)   " if i is not None and n else "")
+                                  + (f"{rate:.2f} items/s   " if rate else "") + (f"ETA {fmt_dur(eta)}   " if eta else "")
+                                  + (f"elapsed {fmt_dur(time.time() - run['start'])}" if run and run.get("start") else ""))
+        else:
+            self.cur_item.config(text="(this step reports no per-item progress)" if run and run["status"] == "running" else "")
+            self.cur_bar["value"] = 0
+            self.cur_stats.config(text=f"elapsed {fmt_dur(time.time() - run['start'])}" if run and run.get("start") and
+                                  run["status"] == "running" else "")
+
+        self.tv.delete(*self.tv.get_children())
+        for x in steps:
+            dur = (x.get("end") or time.time()) - x["start"] if x.get("start") else None
+            self.tv.insert("", "end", tags=(x["status"],), values=(
+                x["name"], f"{STATUS_ICON.get(x['status'], '')} {x['status']}",
+                datetime.fromtimestamp(x["start"]).strftime("%H:%M:%S") if x.get("start") else "",
+                fmt_dur(dur) if x["status"] != "pending" else "", x.get("attempts") or "", x["cmd"]))
+        self.log.delete("1.0", "end")
+        for ln in (ch or {}).get("log_tail", [])[-60:]:
+            tag = "err" if any(k in ln for k in ("Error", "Traceback", "FAILED", "failed")) else \
+                "ok" if " done" in ln or "passed" in ln else "head" if ln.startswith("=====") else ""
+            self.log.insert("end", ln + "\n", tag)
+        self.log.see("end")
+
+        runs = s.get("runs") or []
+        draw_curves(self.curves, runs)
         self.tv3.delete(*self.tv3.get_children())
-        for r in s.get("runs") or []:
+        for r in runs[-12:]:
             sk = r.get("skill")
             self.tv3.insert("", "end", tags=(r["status"],), values=(
                 r["run"], r["dataset"], r.get("inputs", ""), r["status"], r.get("epochs", ""), r.get("best_epoch", ""),
-                f"{sk:.3f}" if isinstance(sk, (int, float)) else "", r.get("gpu_peak", "")))
+                f"{100 * sk:.1f} %" if isinstance(sk, (int, float)) else "", r.get("gpu_peak", "")))
         tr = [b for b in s.get("beats") or [] if (b.get("stage") or "").startswith("train") and b["alive"]]
-        if tr:
-            b = tr[0]
-            self.train_live.config(text=f"▶ {b['stage']} · {b.get('item', '')} · GPU {b.get('gpu_temp', '?')} °C · "
-                                        f"duty {b.get('duty', '?')} · best hold-out skill {b.get('best_holdout_skill', '–')}")
-        else:
-            self.train_live.config(text="no training running")
+        self.train_live.config(text=(f"▶ {tr[0]['stage']} · {tr[0].get('item', '')} · GPU {tr[0].get('gpu_temp', '?')} °C · "
+                                     f"duty {tr[0].get('duty', '?')}") if tr else "no training running")
 
 
 class FeedWindow:
     def __init__(self, tkroot, col):
-        self.col = col
+        self.col, self.blink, self._shown, self._thumb_keys = col, False, None, None
         w = self.w = tk.Toplevel(tkroot)
         w.title("SUIT-DYN · Live feed")
         w.configure(bg=BG)
         sw = tkroot.winfo_screenwidth()
-        try:  # a second monitor exists when the virtual desktop is wider than the primary screen
+        try:
             virtual = ctypes.windll.user32.GetSystemMetrics(78)
         except Exception:
             virtual = sw
-        w.geometry(f"1680x1000+{sw}+0" if virtual > sw + 100 else "1500x950+60+40")
+        w.geometry(f"1720x1020+{sw}+0" if virtual > sw + 100 else "1560x980+60+30")
+        w.minsize(1200, 760)
         fullscreen_keys(w)
+
         top = tk.Frame(w, bg=BG)
-        top.pack(fill="x", padx=14, pady=(10, 2))
-        label(top, "◉ LIVE FEED", 18, RED, True, bg=BG).pack(side="left")
-        self.stage = label(top, "", 16, GOLD, True, bg=BG)
-        self.stage.pack(side="left", padx=18)
-        self.clock = label(top, "", 14, FG, True, bg=BG)
+        top.pack(fill="x", padx=16, pady=(12, 6))
+        self.dot = tk.Canvas(top, width=22, height=22, bg=BG, highlightthickness=0)
+        self.dot.pack(side="left")
+        self.mode = label(top, "LIVE FEED", 17, FG, True, bg=BG)
+        self.mode.pack(side="left", padx=(6, 18))
+        self.stage = label(top, "", 13, GOLD, True, bg=BG)
+        self.stage.pack(side="left")
+        self.clock = label(top, "", 16, FG, True, bg=BG)
         self.clock.pack(side="right")
 
-        pr = tk.Frame(w, bg=BG)
-        pr.pack(fill="x", padx=14, pady=4)
-        self.bar = ttk.Progressbar(pr, style="D.Horizontal.TProgressbar", maximum=1000)
-        self.bar.pack(fill="x")
-        self.prog = label(pr, "", 12, FG, bg=BG)
-        self.prog.pack(anchor="w", pady=(4, 0))
-
         body = tk.Frame(w, bg=BG)
-        body.pack(fill="both", expand=True, padx=14, pady=6)
-        imgp = panel(body, "")
-        imgp.pack(side="left", fill="both", expand=True)
-        self.fname = label(imgp, "", 13, FG, True)
-        self.fname.pack(anchor="w", padx=12, pady=(10, 0))
-        self.fpath = label(imgp, "", 8, DIM)
-        self.fpath.pack(anchor="w", padx=12)
-        self.img = tk.Label(imgp, bg="#000000")
-        self.img.pack(fill="both", expand=True, padx=12, pady=12)
-        side = tk.Frame(body, bg=BG, width=560)
-        side.pack(side="right", fill="both", padx=(10, 0))
-        side.pack_propagate(False)
-        hp = panel(side, "Frame header")
-        hp.pack(fill="x")
-        self.hdr = tk.Text(hp, height=16, bg=PANEL, fg=FG, font=("Consolas", 10), relief="flat")
-        self.hdr.pack(fill="x", padx=10, pady=(2, 10))
-        ap = panel(side, "Other live processes")
-        ap.pack(fill="x", pady=(8, 0))
-        self.others = label(ap, "", 9, FG, justify="left", wraplength=520)
-        self.others.pack(anchor="w", padx=10, pady=(0, 10))
-        tp = panel(side, "Recent files")
-        tp.pack(fill="both", expand=True, pady=(8, 0))
-        self.ticker = tk.Listbox(tp, bg=PANEL, fg="#c9d4e6", font=("Consolas", 9), relief="flat", highlightthickness=0,
-                                 selectbackground="#243554", activestyle="none")
-        self.ticker.pack(fill="both", expand=True, padx=8, pady=(2, 8))
-        self._shown = None
+        body.pack(fill="both", expand=True, padx=16, pady=(4, 12))
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+        o, imgc = card(body, "SUIT frame", GOLD)
+        o.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.img = tk.Label(imgc, bg="#000000")
+        self.img.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+        self.caption = label(imgc, "", 11, FG, True, anchor="w", justify="left")
+        self.caption.pack(anchor="w", padx=14)
+        self.caption2 = label(imgc, "", 9, DIM, anchor="w", justify="left")
+        self.caption2.pack(anchor="w", padx=14, pady=(0, 10))
+
+        side = tk.Frame(body, bg=BG)
+        side.grid(row=0, column=1, sticky="nsew")
+        o, pc = card(side, "Progress", BLUE)
+        o.pack(fill="x")
+        row = tk.Frame(pc, bg=PANEL)
+        row.pack(fill="x", padx=14)
+        self.pct = label(row, "–", 34, FG, True)
+        self.pct.pack(side="left")
+        self.count = label(row, "", 11, DIM)
+        self.count.pack(side="left", padx=12, pady=(14, 0))
+        self.bar = ttk.Progressbar(pc, style="Gold.Horizontal.TProgressbar", maximum=1000)
+        self.bar.pack(fill="x", padx=14, pady=(4, 2))
+        self.prog = label(pc, "", 10, DIM)
+        self.prog.pack(anchor="w", padx=14, pady=(2, 10))
+
+        o, hp = card(side, "Frame header", VIOLET)
+        o.pack(fill="x", pady=(8, 0))
+        self.hdr = tk.Text(hp, height=11, bg=PANEL, fg=FG, font=(F_MONO, 10), relief="flat")
+        self.hdr.pack(fill="x", padx=12, pady=(2, 10))
+        self.hdr.tag_configure("k", foreground=DIM)
+
+        o, fs = card(side, "Filmstrip", GREEN)
+        o.pack(fill="x", pady=(8, 0))
+        self.strip = tk.Canvas(fs, bg=PANEL, height=190, highlightthickness=0)
+        self.strip.pack(fill="x", padx=10, pady=(2, 8))
+
+        o, tp = card(side, "Recent files", GREY)
+        o.pack(fill="both", expand=True, pady=(8, 0))
+        self.ticker = tk.Listbox(tp, bg=PANEL, fg="#c9d4e6", font=(F_MONO, 9), relief="flat", highlightthickness=0,
+                                 selectbackground="#243554", activestyle="none", borderwidth=0)
+        self.ticker.pack(fill="both", expand=True, padx=10, pady=(2, 10))
 
     def refresh(self, s):
+        self.blink = not self.blink
         self.clock.config(text=datetime.now().strftime("%H:%M:%S"))
-        beats = s.get("beats") or []
-        live = [b for b in beats if b["alive"]]
+        live = [b for b in s.get("beats") or [] if b["alive"] and not (b.get("stage") or "").startswith("pipeline")]
+        is_live = bool(live) and s.get("feed_mode") == "live"
+        self.dot.delete("all")
+        self.dot.create_oval(3, 3, 19, 19, fill=(RED if self.blink else "#7a2020") if is_live else GREY, outline="")
+        self.mode.config(text="LIVE FEED" if is_live else "ARCHIVE", fg=FG if is_live else DIM)
         chains = s.get("chains") or []
         if live:
             b = live[0]
-            self.stage.config(text=f"{b.get('stage')}   ·   data set {b.get('dataset')}")
+            self.stage.config(text=f"{b.get('stage')}  ·  data set {b.get('dataset')}")
             i, n = b.get("i"), b.get("n")
             if i is not None and n:
                 self.bar["value"] = 1000 * (i + 1) / n
-                rate = b.get("rate")
-                eta = b.get("eta")
-                started = b.get("stage_started")
-                self.prog.config(text=f"{i + 1:,} / {n:,}   ({100 * (i + 1) / n:.1f} %)     "
-                                      f"{(f'{rate:.2f} items/s' if rate else 'rate …')}     "
-                                      f"ETA {fmt_dur(eta) if eta else '…'}     elapsed {fmt_dur(time.time() - started) if started else ''}")
-            else:
-                self.bar["value"] = 0
-                self.prog.config(text=b.get("item") or "")
-            extra = {k: v for k, v in b.items() if k in ("horizon", "set", "epoch", "gpu_temp", "duty",
-                                                         "best_holdout_skill")}
-            if extra:
-                self.prog.config(text=self.prog.cget("text") + "     " + "  ".join(f"{k}={v}" for k, v in extra.items()))
-            others = [f"▶ {o.get('stage')} · {o.get('item') or ''}" for o in live[1:]]
-            self.others.config(text="\n".join(others) or "none")
+                self.pct.config(text=f"{100 * (i + 1) / n:.0f}%")
+                self.count.config(text=f"{i + 1:,} of {n:,}")
+            rate, eta, started = b.get("rate"), b.get("eta"), b.get("stage_started")
+            extra = "  ".join(f"{k}={b[k]}" for k in ("horizon", "set", "gpu_temp", "duty") if k in b)
+            self.prog.config(text="   ".join(x for x in (f"{rate:.2f} items/s" if rate else "", f"ETA {fmt_dur(eta)}" if eta else "",
+                                                       f"elapsed {fmt_dur(time.time() - started)}" if started else "", extra) if x))
         else:
             running = [st for ch in chains[:1] for st in ch["steps"] if st["status"] == "running"]
-            since = f" since {datetime.fromtimestamp(running[0]['start']).strftime('%H:%M')}" if running and running[0].get("start") else ""
-            self.stage.config(text=(f"{running[0]['name']}{since}  ·  this step does not report files — "
-                                    f"showing the newest frames on the share" if running
-                                    else "idle — showing the newest frames on the share"))
+            self.stage.config(text=(f"{running[0]['name']} is running (no per-file report) — newest frames on the share"
+                                    if running else "idle — newest frames on the share"))
             self.bar["value"] = 0
-            self.prog.config(text=f"chain {chains[0]['name']}: {chains[0]['state']}" if chains else "")
-            self.others.config(text="none")
+            self.pct.config(text="–")
+            self.count.config(text="")
+            self.prog.config(text=f"{chains[0]['name']}: {chains[0]['state']}" if chains else "")
         pv = self.col.preview
         if pv.get("key") and pv.get("key") != self._shown:
             self._shown = pv["key"]
-            mode = "LIVE · " if (self.col.snap or {}).get("feed_mode") == "live" else "ARCHIVE (newest on share) · "
-            self.fname.config(text=mode + pv["key"])
-            self.fpath.config(text=pv.get("path") or "")
+            h = pv.get("hdr") or {}
             if pv.get("image") is not None:
-                box = max(300, min(self.img.winfo_width(), self.img.winfo_height()) - 10)
+                box = max(360, min(self.img.winfo_width(), self.img.winfo_height()) - 8)
                 im = pv["image"].copy()
                 im.thumbnail((box, box))
                 self._photo = ImageTk.PhotoImage(im)
                 self.img.config(image=self._photo, text="")
             else:
-                self.img.config(image="", text=f"no preview: {pv.get('error')}", fg=DIM, font=("Segoe UI", 12))
-            h = pv.get("hdr") or {}
-            keys = ["DATE-OBS", "FTR_NAME", "OBS_MODE", "IMG_TYPE", "ROI_FF", "NAXIS1", "NAXIS2", "CMD_EXPT",
-                    "MEAS_EXP", "CRPIX1", "CRPIX2", "CROTA2", "RSUN_OBS", "HGLT_OBS", "F_VER", "FLAT_CF", "SCAT_CF"]
-            lines = [f"{k:<9} {h[k]}" for k in keys if k in h]
+                self.img.config(image="", text=f"no preview: {pv.get('error')}", fg=DIM, font=(F_UI, 12))
+            mode = ""
             if "CRPIX1" in h:
                 mode = "centred" if float(h["CRPIX1"]) < 1150 * int(h.get("NAXIS1", 2048)) / 2048 else "offset"
-                lines.append(f"{'POINTING':<9} {mode}")
+            self.caption.config(text=(("● LIVE  " if is_live else "ARCHIVE  ") + pv["key"]))
+            self.caption2.config(text=f"{h.get('DATE-OBS', '')}   {h.get('FTR_NAME', '')}   {h.get('NAXIS1', '')}×"
+                                      f"{h.get('NAXIS2', '')}   {h.get('ROI_FF', '')}   pointing {mode}   {pv.get('path') or ''}")
+            keys = ["DATE-OBS", "FTR_NAME", "OBS_MODE", "ROI_FF", "NAXIS1", "CMD_EXPT", "MEAS_EXP", "CRPIX1", "CRPIX2",
+                    "CROTA2", "RSUN_OBS", "HGLT_OBS", "F_VER", "FLAT_CF", "SCAT_CF"]
             self.hdr.delete("1.0", "end")
-            self.hdr.insert("end", "\n".join(lines))
+            for k in keys:
+                if k in h:
+                    self.hdr.insert("end", f"{k:<9} ", "k")
+                    self.hdr.insert("end", f"{h[k]}\n")
+        thumbs = s.get("thumbs") or []
+        tkeys = [t[0] for t in thumbs]
+        if tkeys != self._thumb_keys:
+            self._thumb_keys = tkeys
+            self.strip.delete("all")
+            self._thumb_photos = []
+            wdt = self.strip.winfo_width()
+            per_row = 4
+            size = max(60, int((wdt - 10) / per_row) - 8)
+            for k, (name, im, date) in enumerate(reversed(thumbs)):
+                if k >= 2 * per_row:
+                    break
+                ph = ImageTk.PhotoImage(im.resize((size, size)))
+                self._thumb_photos.append(ph)
+                x, y = 4 + (k % per_row) * (size + 8), 2 + (k // per_row) * (size + 20)
+                self.strip.create_image(x, y, image=ph, anchor="nw")
+                self.strip.create_text(x, y + size + 2, text=str(date)[11:19], anchor="nw", fill=DIM, font=(F_UI, 8))
+            self.strip.config(height=2 * (size + 20) + 4)
         hist = s.get("history") or []
+        self.ticker.delete(0, "end")
         if not hist and s.get("newest"):
-            self.ticker.delete(0, "end")
             self.ticker.insert("end", "newest NB03 full-disk frames on the share:")
             for name, _, ts in s["newest"]:
                 self.ticker.insert("end", f"{ts}  {name}")
             return
-        rows, seen = [], set()
+        seen = set()
         for hrec in reversed(hist):
             it = hrec.get("item") or ""
-            if it in seen:
+            if it in seen or (hrec.get("stage") or "").startswith("pipeline"):
                 continue
             seen.add(it)
-            rows.append(f"{datetime.fromtimestamp(hrec.get('t', 0)).strftime('%H:%M:%S')}  {hrec.get('stage', '')[:26]:<26} {it}")
-            if len(rows) >= 60:
+            self.ticker.insert("end", f"{datetime.fromtimestamp(hrec.get('t', 0)).strftime('%H:%M:%S')}  "
+                                      f"{hrec.get('stage', '')[:18]:<18} {it}")
+            if len(seen) >= 80:
                 break
-        self.ticker.delete(0, "end")
-        for r in rows:
-            self.ticker.insert("end", r)
 
 
 def main():
