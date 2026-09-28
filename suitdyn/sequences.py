@@ -40,6 +40,27 @@ def assign_splits(t, bounds, max_gap_s):
     return split.values, r
 
 
+def embargo(t, split, hours, order=("train", "val", "test")):
+    """Frames to drop so that each split starts at least `hours` after the last frame of the splits before it.
+
+    Solar structure persists for hours, so a validation target 15 min after the last training frame is not
+    independent of it. With an embargo longer than the longest horizon plus the context, no window of a later
+    split can see the same solar state as the end of an earlier one. Returns a boolean array (True = drop)."""
+    t = pd.Series(pd.to_datetime(t)).reset_index(drop=True)
+    split = pd.Series(split).reset_index(drop=True)
+    drop = np.zeros(len(t), bool)
+    last = None
+    for name in order:
+        m = (split == name).values
+        if not m.any():
+            continue
+        if last is not None:
+            drop |= m & (t < last + pd.Timedelta(hours=hours)).values
+        kept = m & ~drop
+        last = max(last, t[kept].max()) if last is not None and kept.any() else (t[kept].max() if kept.any() else last)
+    return drop
+
+
 def window_index(frames, contexts, horizons, max_gap_s):
     """All windows (K context frames ending at position i, target at i+H) inside one run and one split.
 

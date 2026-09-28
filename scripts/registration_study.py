@@ -34,7 +34,7 @@ import pandas as pd  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from concurrent.futures import ProcessPoolExecutor  # noqa: E402
 
-from suitdyn import atomic, config, geometry, io, motion, paths, register, solar  # noqa: E402
+from suitdyn import atomic, config, geometry, io, motion, paths, pointing, register, solar  # noqa: E402
 
 # Data-set scoped (suitdyn/paths.py): only frames inside the data set's time span (configs/datasets/<name>.toml,
 # widened by [scope] margin_h) are registered, and the fixed pattern for motion and the robust QC statistics
@@ -96,10 +96,8 @@ def local_quadratic(t, v, half_window_s, clip=4.0):
 
 
 def pointing_mode(x0, y0, size):
-    """'centred' when the disk centre is within 200 (binned) px of the detector centre, else 'offset'.
-    The spacecraft pointing changed on 2026-09-23 ~05:00 UT from centred to offset (docs/PHASE2.md)."""
-    c = (size - 1) / 2
-    return np.where(np.hypot(x0 - c, y0 - c) < 200 * size / 2048, "centred", "offset")
+    """'centred' / 'offset' (suitdyn.pointing.mode); the distinct pointings are suitdyn.pointing.clusters."""
+    return pointing.mode(x0, y0, size)
 
 
 def _segment_positions(job):
@@ -140,6 +138,7 @@ def adopt_nb03(nb, fp):
     nb["jump_px"] = np.hypot(nb.pc_dx, nb.pc_dy).where(nb.run.eq(nb.run.shift()))
     nb["segment"] = (nb.run.ne(nb.run.shift()) | (nb.jump_px > JUMP_PX)).cumsum()
     nb["pointing_mode"] = pointing_mode(nb.cc_x0, nb.cc_y0, 2048)
+    nb["pointing_cluster"] = pointing.clusters(nb.cc_x0.values, nb.cc_y0.values, 2048)
     nb["segment"] = (nb.segment.ne(nb.segment.shift()) | nb.pointing_mode.ne(nb.pointing_mode.shift())).cumsum()
     man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
     jobs = []
@@ -190,6 +189,8 @@ def adopt_full(full, nb):
     full["reg_R"] = full.cc_R
     full["reg_method"] = "circle_common_rays_per_frame"
     full["pointing_mode"] = pointing_mode(full.cc_x0, full.cc_y0, 4096)
+    full = full.sort_values("t")
+    full["pointing_cluster"] = pointing.clusters(full.cc_x0.values, full.cc_y0.values, 4096)
     return full
 
 
@@ -376,7 +377,7 @@ def main():
     figures(nb, val, fp_info)
     before_after(nb)
 
-    keep = ["file", "t", "frame", "FTR_NAME", "OBS_MODE", "pointing_mode", "run", "segment", "reg_method", "reg_x0", "reg_y0", "reg_R",
+    keep = ["file", "t", "frame", "FTR_NAME", "OBS_MODE", "pointing_mode", "pointing_cluster", "run", "segment", "reg_method", "reg_x0", "reg_y0", "reg_R",
             "reg_x0_anchor_sd", "reg_y0_anchor_sd", "CROTA2", "img_x", "img_y", "img_err", "cc_x0", "cc_y0", "cc_R",
             "cc_rms", "cc_rays", "common_rays", "circle_smoothed_x0", "circle_smoothed_y0", "CRPIX1", "CRPIX2", "R_SUN",
             "jump_px", "limb_minus_reg_x", "limb_minus_reg_y", "nb_x0", "nb_y0", "nb_dt_s", "filter_offset_x",

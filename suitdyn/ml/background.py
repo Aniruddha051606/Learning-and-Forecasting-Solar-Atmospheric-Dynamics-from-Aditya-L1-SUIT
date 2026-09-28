@@ -92,8 +92,10 @@ def disk_index(G, r_ref, rho_max):
     return pos
 
 
-def solve(M, ops, pos, lam, x0=None, iter_lim=4000):
-    """S on the disk pixels from {h: M(h)} and {h: (Rbar_h, valid_rows)}; lam weights the gradient penalty."""
+def solve(M, ops, pos, lam, x0=None, iter_lim=4000, prior=None, shrink=0.0):
+    """S on the disk pixels from {h: M(h)} and {h: (Rbar_h, valid_rows)}; lam weights the gradient penalty.
+    prior/shrink: add shrink * |S - prior|^2 (a pointing group's S is pulled toward the common S, so a group
+    with few pairs stays stable)."""
     G = pos.shape[0]
     Dg = gradient_matrix(pos)
     blocks, rhs = [], []
@@ -103,20 +105,52 @@ def solve(M, ops, pos, lam, x0=None, iter_lim=4000):
         use = good & np.isfinite(m)
         blocks.append((sparse.identity(Rbar.shape[0], format="csr") - Rbar)[use])
         rhs.append(m[use])
-    A = sparse.vstack(blocks + [np.sqrt(lam) * Dg]).tocsr()
-    b = np.concatenate(rhs + [np.zeros(Dg.shape[0])])
+    extra, extra_b = [np.sqrt(lam) * Dg], [np.zeros(Dg.shape[0])]
+    if prior is not None and shrink > 0:
+        n = int((pos >= 0).sum())
+        extra.append(np.sqrt(shrink) * sparse.identity(n, format="csr"))
+        extra_b.append(np.sqrt(shrink) * np.nan_to_num(np.asarray(prior)[pos >= 0]))
+    A = sparse.vstack(blocks + extra).tocsr()
+    b = np.concatenate(rhs + extra_b)
+    Dg = sparse.vstack(extra).tocsr()  # rows after the data rows (for the fit rms below)
     sol = lsqr(A, b, atol=1e-10, btol=1e-10, iter_lim=iter_lim, x0=x0)
     S = np.full((G, G), np.nan, np.float32)
     S[pos >= 0] = sol[0]
     nd = len(b) - Dg.shape[0]
-    fit_rms = float(np.sqrt(np.mean((A[:nd] @ sol[0] - b[:nd]) ** 2)))
+    fit_rms = float(np.sqrt(np.mean((A[:nd] @ sol[0] - b[:nd]) ** 2))) if nd else float("nan")
     return S, sol[0], {"iterations": int(sol[2]), "istop": int(sol[1]), "fit_rms": fit_rms}
+
+
+def pointing_groups(px, py, bin_px, min_pairs):
+    """Group samples by their target pointing (2048-px units): bins of bin_px; bins with fewer than min_pairs
+    samples are merged into the nearest large bin. Returns (group id per sample, centres (n, 2)). One group
+    when the pointing spread is below one bin: the detector background then sits still on the grid."""
+    px, py = np.asarray(px, float), np.asarray(py, float)
+    if np.ptp(px) < bin_px and np.ptp(py) < bin_px:
+        return np.zeros(len(px), np.int64), np.array([[np.median(px), np.median(py)]])
+    keys = np.stack([np.floor(px / bin_px), np.floor(py / bin_px)], 1)
+    uniq, inv, cnt = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    inv = inv.ravel()
+    big = np.flatnonzero(cnt >= min_pairs)
+    if len(big) == 0:
+        return np.zeros(len(px), np.int64), np.array([[np.median(px), np.median(py)]])
+    cen = np.array([[np.median(px[inv == k]), np.median(py[inv == k])] for k in range(len(uniq))])
+    to_big = {k: (k if k in set(big) else big[np.argmin(np.hypot(*(cen[big] - cen[k]).T))]) for k in range(len(uniq))}
+    g_old = np.array([to_big[k] for k in inv])
+    ids = {k: i for i, k in enumerate(sorted(set(g_old)))}
+    g = np.array([ids[k] for k in g_old], np.int64)
+    centres = np.array([[np.median(px[g == i]), np.median(py[g == i])] for i in range(len(ids))])
+    return g, centres
 
 
 def score(bank, ids, S, batch=16, rho_max=None, tick=None):
     """Median per-horizon MAE of B1-avg and of B1-avg-bgS (= mean_k [rot_k(F_k - S) + S]) on the samples,
-    inside rho < rho_max when given (the outer ring is poorly constrained: foreshortening, sources off the disk)."""
-    bank.set_background(S)
+    inside rho < rho_max when given (the outer ring is poorly constrained: foreshortening, sources off the disk).
+    S: one map, or (maps, centres) for one map per pointing group."""
+    if isinstance(S, tuple):
+        bank.set_background_groups(*S)
+    else:
+        bank.set_background(S)
     inner = None if rho_max is None else bank.mu > float(np.sqrt(1 - rho_max ** 2))
     per = {}
     for n0 in range(0, len(ids), batch):

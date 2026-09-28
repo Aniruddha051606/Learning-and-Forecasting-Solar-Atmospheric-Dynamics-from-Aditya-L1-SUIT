@@ -26,6 +26,7 @@ import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from suitdyn import atomic, config, normalize, paths, progress, response  # noqa: E402
+from suitdyn.ml import samples  # noqa: E402
 
 CFG = config.load_dataset()
 P3 = config.load_phase3()
@@ -80,33 +81,26 @@ def main():
 
     # 2. sample index
     seqf = pd.read_parquet(paths.sequences("frames.parquet"))
-    pos2store = pd.Series(fr.store_index.values, index=fr.frame_id).reindex(seqf.frame_id).values
-    assert not np.isnan(pos2store.astype(float)).any(), "a data-set frame is missing from the store"
-    pos2store = pos2store.astype(np.int64)
     man = pd.read_parquet(paths.archive("manifest.parquet"), columns=["file", "HGLT_OBS"]).set_index("file")
     win = pd.read_parquet(paths.sequences("windows.parquet"))
     K = int(S["context"])
+    # train / val only: the sealed test split is read solely by the one-time test evaluation
     win = win[(win.context == K) & win.horizon.isin(S["horizons"]) & win.split.isin(["train", "val"])].copy()
     runs_train = sorted(seqf.loc[seqf.split == "train", "run"].unique())
     holdout_run = runs_train[-1]
     win["run"] = seqf.run.values[win["last"].values]
     win["set"] = np.where(win.split == "val", "val", np.where(win.run == holdout_run, "holdout", "train"))
     if S.get("train_stride", 1) > 1:
-        win = pd.concat([d.iloc[::S["train_stride"]] if s == "train" else d
-                         for (s, h), d in win.groupby(["set", "horizon"])])
+        win = pd.concat([d.iloc[::S["train_stride"]] if s_ == "train" else d
+                         for (s_, h), d in win.groupby(["set", "horizon"])])
     win = win.sort_values(["set", "horizon", "last"]).reset_index(drop=True)
-    ts = seqf.t.values
-    first = win["first"].values.astype(np.int64)
-    pos = first[:, None] + np.arange(K)[None, :]
-    tgt = win.target.values.astype(np.int64)
-    dt = (ts[tgt][:, None] - ts[pos]).astype("timedelta64[ns]").astype(np.float64) / 1e9
-    idx = pd.DataFrame({
-        "set": win.set.values, "horizon": win.horizon.values.astype(int), "run": win.run.values.astype(int),
-        "ctx": list(pos2store[pos]), "tgt": pos2store[tgt], "dt_context_s": list(dt),
-        "b0": man.HGLT_OBS.reindex(seqf.frame_id.values[tgt]).values.astype(float),
-        "t_last": seqf.t.values[win["last"].values], "t_target": seqf.t.values[tgt],
-        "dt_target_s": dt[:, -1], "target_frame": seqf.frame_id.values[tgt]})
-    assert np.isfinite(idx.b0).all(), "B0 missing for a target frame"
+    idx = samples.build(win, seqf, fr, man.HGLT_OBS, win.set.values)
+    # the embargo between splits (configs/datasets/<name>.toml [split] embargo_h) also separates the training
+    # runs from the hold-out run that early stopping and every tuned baseline use
+    emb = float(CFG["split"].get("embargo_h", 4.0))
+    n0 = len(idx)
+    idx = samples.embargo_before(idx, "holdout", "train", emb)
+    print(f"embargo {emb} h before the hold-out run: {n0 - len(idx)} training samples dropped", flush=True)
     atomic.to_parquet(idx, out / f"samples_{G}.parquet")
     atomic.save_npy(out / f"mu_{G}.npy", mu.astype(np.float32))
     tr = np.load(paths.phase2("noise_maps", f"noise_maps_{name}_train_g2_resp.npz"))["trusted"]
@@ -114,6 +108,7 @@ def main():
     atomic.save_npy(out / f"trusted_{G}.npy", tr[np.ix_(sel, sel)])
     counts = idx.groupby(["set", "horizon"]).size().unstack().fillna(0).astype(int)
     info = {"grid": G, "r_ref": r_ref, "context": K, "horizons": S["horizons"], "holdout_run": int(holdout_run),
+            "embargo_h": emb, "embargo_dropped_train": int(n0 - len(idx)),
             "samples": {str(h): counts[h].to_dict() for h in counts.columns}, "store": name,
             "frames_sha256": hashlib.sha256(frames.tobytes()).hexdigest(),
             "frames_gb": round(frames.nbytes / 1e9, 3), "seconds": round(time.time() - t0, 1),

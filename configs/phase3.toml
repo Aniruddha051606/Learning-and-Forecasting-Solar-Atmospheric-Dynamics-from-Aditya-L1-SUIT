@@ -25,6 +25,13 @@ rho_max = 0.95
 # lambda is scored inside this radius: in the outer ring (0.9-0.95) S is poorly constrained (foreshortening,
 # rotation sources off the disk; tests/test_ml_data_background.py), so it must not drive the choice.
 score_rho_max = 0.9
+# Pointing groups: the detector background moves with the pointing, so over a long data set one S smears.
+# Samples are grouped by target pointing in bins of this size (2048-px units; the oscillation is +-10 px),
+# bins with fewer pairs are merged into the nearest large bin, each group's S is pulled toward the common S
+# with this weight, and grouping is kept only if it beats the single S on the hold-out run.
+pointing_bin_px = 12.0
+pointing_min_pairs = 150
+pointing_shrink = 1.0
 
 [model]
 # Model zoo: suitdyn/ml/models.py. Every model predicts the residual over its B1 (plain or background-aware).
@@ -42,8 +49,10 @@ lr = 3.0e-4
 weight_decay = 1.0e-4
 grad_clip = 1.0
 bf16 = true
-# Samples drawn per epoch (fraction of the training set; 1.0 = all), reshuffled every epoch.
-epoch_fraction = 1.0
+# Samples drawn per epoch (fraction of the training set, a new random draw every epoch). Consecutive
+# windows share K-1 of their K context frames, so a full pass is mostly repetition: 0.25 trains ~4x faster
+# per epoch on this thermally limited laptop (~6-10 % sustainable GPU duty) with little loss.
+epoch_fraction = 0.25
 
 [thermal]
 # Duty-cycle controller (scripts/phase3_train.py, class Thermal). This laptop sustains ~6-10 % GPU duty.

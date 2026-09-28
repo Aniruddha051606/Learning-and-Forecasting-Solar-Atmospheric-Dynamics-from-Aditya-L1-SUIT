@@ -27,8 +27,26 @@ def _read(path):
 
 def load(path="configs/phase1.toml"):
     cfg, p, sha = _read(path)
-    cfg["_meta"] = {"config_path": str(p), "config_sha256": sha, "git": git_state()}
+    cfg["_meta"] = {"config_path": str(p), "config_sha256": sha, "git": git_state(), "env": environment()}
     return cfg
+
+
+PACKAGES = ("numpy", "pandas", "scipy", "astropy", "zarr", "pyarrow", "torch", "scikit-image",
+            "opencv-python-headless", "sunpy", "matplotlib")
+
+
+def environment():
+    """Python, platform and the versions of the packages that can change a result (read from package
+    metadata, so nothing heavy is imported). Recorded with every product next to the git state."""
+    import platform
+    from importlib import metadata
+    env = {"python": platform.python_version(), "platform": platform.platform()}
+    for pkg in PACKAGES:
+        try:
+            env[pkg] = metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            env[pkg] = None
+    return env
 
 
 def dataset_config_path(name=None):
@@ -58,8 +76,9 @@ def dataset_span(cfg, margin_h=None):
     """Time span of a data set (earliest split start, latest split end), widened by a margin so that
     registration smoothing and QC statistics near the edges see their neighbours."""
     margin = pd.Timedelta(hours=cfg.get("scope", {}).get("margin_h", 3) if margin_h is None else margin_h)
-    starts = [pd.Timestamp(v[0]) for v in cfg["split"].values()]
-    ends = [pd.Timestamp(v[1]) for v in cfg["split"].values()]
+    ranges = [v for k, v in cfg["split"].items() if k in ("train", "val", "test")]
+    starts = [pd.Timestamp(v[0]) for v in ranges]
+    ends = [pd.Timestamp(v[1]) for v in ranges]
     return min(starts) - margin, max(ends) + margin
 
 

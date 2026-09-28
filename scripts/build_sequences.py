@@ -9,6 +9,7 @@ outputs/datasets/<name>/sequences/:
   windows.parquet    every (context, horizon) window, all splits
   bursts.parquet     multi-filter snapshots, every filter listed, missing ones explicit
   test_seal.json     hash of the test frame list (reading test windows needs an explicit unseal)
+  embargoed.parquet  frames dropped so each split starts >= [split] embargo_h after the previous one ends
   summary.json       counts per split / horizon, independent-hours estimate, provenance
 
 The test seal is never silently replaced. If a rebuild gives the same test frames, the existing seal (with
@@ -75,14 +76,33 @@ def main():
         OUT / "excluded.parquet", index=False)
     f = nb[keep].reset_index(drop=True)
 
-    split, run = sequences.assign_splits(f.t, S, Q["max_gap_s"])
+    bounds = {k: v for k, v in S.items() if k in ("train", "val", "test")}
+    split, run = sequences.assign_splits(f.t, bounds, Q["max_gap_s"])
     f["split"], f["run"] = split, run
     f = f[f.split.notna()].reset_index(drop=True)
+    # embargo: each split starts >= embargo_h after the previous one ends (independent solar states)
+    emb = float(S.get("embargo_h", 4.0))
+    dropped = sequences.embargo(f.t, f.split, emb)
+    embargoed = f[dropped][["frame_id", "t", "split"]].assign(reason="embargo")
+    f = f[~dropped].reset_index(drop=True)
     f["run"] = sequences.runs(f.t, Q["max_gap_s"])
-    cols = ["frame_id", "sha256", "t", "split", "run", "OBS_MODE", "pointing_mode", "segment", "reg_x0", "reg_y0",
-            "reg_R", "CROTA2", "jump_px", "qc_reasons"]
+    # one pointing per data set: a new pointing in the archive must not be merged silently (PHASE3 §4b)
+    cl = f.pointing_cluster.value_counts() if "pointing_cluster" in f else pd.Series(dtype=int)
+    want = D.get("pointing_cluster")
+    if want:
+        f = f[f.pointing_cluster == want].reset_index(drop=True)
+        f["run"] = sequences.runs(f.t, Q["max_gap_s"])
+    elif len(cl) > 1 and not D.get("allow_mixed_pointing", False):
+        detail = "; ".join(f"{k}: {v} frames, {f.t[f.pointing_cluster == k].min()} .. {f.t[f.pointing_cluster == k].max()}"
+                           for k, v in cl.items())
+        sys.exit(f"data set {config.DATASET} mixes {len(cl)} pointing clusters ({detail}). Set [dataset] "
+                 f"pointing_cluster to one of them, or allow_mixed_pointing = true on purpose.")
+    cols = ["frame_id", "sha256", "t", "split", "run", "OBS_MODE", "pointing_mode", "pointing_cluster", "segment",
+            "reg_x0", "reg_y0", "reg_R", "CROTA2", "jump_px", "qc_reasons"]
+    cols = [c for c in cols if c in f]
     seal_hash = seal_test(f, a.reseal)  # before anything is written: a refused reseal leaves the data set as it was
     atomic.to_parquet(f[cols], OUT / "frames.parquet")
+    atomic.to_parquet(embargoed, OUT / "embargoed.parquet")
 
     idx = sequences.window_index(f[["frame_id", "t", "split"]], Q["contexts"], Q["horizons"], Q["max_gap_s"])
     atomic.to_parquet(idx, OUT / "windows.parquet")
@@ -105,6 +125,8 @@ def main():
         "horizon_minutes_median": {int(h): float(g.target_dt_s.median() / 60) for h, g in idx.groupby("horizon")},
         "bursts": {"count": int(bursts.burst.nunique()),
                    "missing_filter_rows": int((~bursts.present).sum())},
+        "embargo_h": emb, "embargoed_frames": embargoed.split.value_counts().to_dict(),
+        "pointing_clusters": {str(k): int(v) for k, v in cl.items()}, "pointing_cluster_used": want,
         "test_seal_sha256": seal_hash, **CFG["_meta"],
     }
     atomic.write_json(OUT / "summary.json", summary)

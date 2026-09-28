@@ -2,13 +2,14 @@
 
     python -m suitdyn plan   [--dataset c0]                 what would run, what is up to date, and why
     python -m suitdyn run    [--dataset c0] [--until STAGE] [--only STAGE] [--force STAGE] [--skip-archive]
-                             [--smoke] [--detach]
+                             [--smoke] [--detach] [--with-test]
     python -m suitdyn status [--dataset c0]                 state of every stage from the last runs
 
 Stages (scripts in scripts/, each also runnable alone):
   archive  manifest -> frames                      frame-local, shared by every data set, incremental
   dataset  registration -> sequences -> calibration -> store -> noise_maps -> response -> noise_maps_resp
-           -> samples -> background -> train:<model>:<seed> ... -> evaluate
+           -> samples -> background -> train:<model>:<seed> ... -> evaluate [-> evaluate_test, only with --with-test:
+           the one-time test evaluation; the test split is unsealed, the read logged, the model set recorded]
 Robustness:
   * fingerprint per stage = the stage command, the code it runs (the script and every suitdyn module it
     imports, transitively; progress/atomic/paths excluded because they cannot change a result), the config
@@ -63,6 +64,7 @@ class Stage:
     raw: bool = False               # reads raw FITS from the archive
     retries: int = 0
     resume_arg: str = ""
+    optional: bool = False          # only runs when asked for (the one-time test evaluation: --with-test)
 
 
 def stages(ds, smoke=False):
@@ -113,6 +115,10 @@ def stages(ds, smoke=False):
     st.append(Stage("evaluate", "scripts/phase3_evaluate.py", ["--max-samples", "64"] if smoke else [], deps=train,
                     gpu=True, configs=d3,
                     outputs=[paths.phase3("eval_smoke" if smoke else "eval", "summary.csv", name=ds, make=False)]))
+    st.append(Stage("evaluate_test", "scripts/phase3_evaluate.py",
+                    ["--split", "test", "--reason", "final run (python -m suitdyn run --with-test)"]
+                    + (["--max-samples", "64"] if smoke else []), deps=["evaluate"], gpu=True, configs=d3, optional=True,
+                    outputs=[paths.phase3("eval_test_smoke" if smoke else "eval_test", "summary.csv", name=ds, make=False)]))
     return {s.name: s for s in st}
 
 
@@ -197,7 +203,7 @@ def outputs_ok(stage):
     return all(Path(o).exists() for o in stage.outputs)
 
 
-def plan(ds, smoke=False, force=(), only=None, until=None, frm=None, skip_archive=False):
+def plan(ds, smoke=False, force=(), only=None, until=None, frm=None, skip_archive=False, with_test=False):
     st = stages(ds, smoke)
     names = list(st)
     fps, rows = {}, []
@@ -220,6 +226,8 @@ def plan(ds, smoke=False, force=(), only=None, until=None, frm=None, skip_archiv
         up_to_date = prev.get("status") == "done" and prev.get("fingerprint") == fps[n] and outputs_ok(s)
         if n not in sel:
             action, why = "skip", "not selected"
+        elif s.optional and not with_test:
+            action, why = "skip", "the sealed test split: only with --with-test"
         elif s.scope == "archive" and skip_archive:
             action, why = "skip", "--skip-archive"
         elif n in force or any(n.startswith(f + ":") for f in force):
@@ -314,7 +322,7 @@ def run_stage(ds, s, fp, smoke, log_dir):
     env = {**os.environ, "SUITDYN_DATASET": ds, "PYTHONIOENCODING": "utf-8", **({"SUITDYN_SMOKE": "1"} if smoke else {})}
     log = log_dir / f"{s.name.replace(':', '_')}.log"
     rec = {"stage": s.name, "fingerprint": fp, "status": "running", "started": time.time(), "args": args,
-           "attempts": 0, "git": config.git_state(), "smoke": smoke}
+           "attempts": 0, "git": config.git_state(), "env": config.environment(), "smoke": smoke}
     for attempt in range(s.retries + 1):
         rec["attempts"] = attempt + 1
         atomic.write_json(state_path(ds, s.name), rec)
@@ -352,7 +360,7 @@ def cmd_run(a):
             sys.exit(f"another runner (pid {other['pid']}) is working on data set {ds}")
     atomic.write_json(lock, {"pid": os.getpid(), "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "argv": sys.argv})
     try:
-        st, fps, rows = plan(ds, a.smoke, set(a.force or []), a.only, a.until, a.frm, a.skip_archive)
+        st, fps, rows = plan(ds, a.smoke, set(a.force or []), a.only, a.until, a.frm, a.skip_archive, a.with_test)
         todo = [r["stage"] for r in rows if r["action"] == "run"]
         print(pd.DataFrame(rows)[["stage", "action", "why", "last"]].to_string(index=False), flush=True)
         problems = preflight(ds, st, todo)
@@ -377,7 +385,7 @@ def cmd_run(a):
 
 
 def cmd_plan(a):
-    _, _, rows = plan(a.dataset, a.smoke, set(a.force or []), a.only, a.until, a.frm, a.skip_archive)
+    _, _, rows = plan(a.dataset, a.smoke, set(a.force or []), a.only, a.until, a.frm, a.skip_archive, a.with_test)
     print(pd.DataFrame(rows).to_string(index=False))
 
 
@@ -415,6 +423,7 @@ def main(argv=None):
     ap.add_argument("--force", action="append")
     ap.add_argument("--skip-archive", action="store_true")
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--with-test", action="store_true", help="also the one-time test evaluation (unseals the test split)")
     ap.add_argument("--detach", action="store_true")
     a = ap.parse_args(argv)
     os.environ["SUITDYN_DATASET"] = a.dataset

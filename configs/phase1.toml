@@ -54,6 +54,9 @@ pattern_frames = 320
 # Quality gate: the high-passed patterns of two independent halves of those frames must correlate at least
 # this well on the disk (Phase 2 C1 measured 0.949 between days at 8 px); below it the step fails.
 pattern_min_split_half_r = 0.8
+# ... and the patterns from the early and the late half of the training span (a pattern that changes over the
+# data set, e.g. at an instrument-state change, fails the calibration step).
+pattern_min_time_r = 0.8
 
 [register]
 # Common grid for every full-disk frame (both pipelines): disk-centred, solar north up.

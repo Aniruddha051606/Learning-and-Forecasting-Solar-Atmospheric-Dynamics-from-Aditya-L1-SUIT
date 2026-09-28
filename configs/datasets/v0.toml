@@ -18,6 +18,9 @@ drop_program_first_frame = true
 margin_h = 3
 
 [split]
+# Each split starts at least this long after the previous one ends: solar structure persists for hours,
+# so adjacent splits would share solar states. Longer than the longest horizon (3.8 h) plus the context.
+embargo_h = 4.0
 # Cut only at natural observing gaps; every boundary falls in a gap longer than max_gap_s.
 # The test split is sealed: its frame list is hashed when the split is written and reading test
 # windows needs an explicit unseal (suitdyn.sequences).

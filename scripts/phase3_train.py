@@ -92,7 +92,7 @@ def main():
     bank = data.Bank(paths.phase3("cache"), dev)
     bg_file = paths.phase3("background", f"static_bg_{bank.G}.npz")
     if a.inputs == "bg":
-        bank.set_background(np.load(bg_file)["S"])
+        data.load_background(bank, bg_file)
     tr, ho = bank.ids("train"), bank.ids("holdout")
     kw = {"unet": {"k": bank.K, "base": M["unet_base"]}, "convlstm": {"k": bank.K, "hidden": M["convlstm_hidden"]}}
     model = models.MODELS[a.model](**kw[a.model]).to(dev)

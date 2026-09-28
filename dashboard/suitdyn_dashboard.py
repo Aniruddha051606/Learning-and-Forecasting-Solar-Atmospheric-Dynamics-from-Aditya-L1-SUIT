@@ -69,14 +69,14 @@ STAGE_TO_CATALOGUE = {"manifest": "Manifest", "build_manifest": "Manifest", "fra
                       "response": "Pointing response", "samples": "Samples", "phase3_prepare": "Samples",
                       "background": "Static background S", "evaluate": "Evaluation", "pipeline": "Whole pipeline"}
 PIPELINE_ORDER = ["manifest", "frames", "registration", "sequences", "calibration", "store", "noise_maps", "response",
-                  "noise_maps_resp", "samples", "background", "train", "evaluate"]
+                  "noise_maps_resp", "samples", "background", "train", "evaluate", "evaluate_test"]
 SCRIPT_OF = {"manifest": "scripts/build_manifest.py", "frames": "scripts/process_frames.py",
              "registration": "scripts/registration_study.py", "sequences": "scripts/build_sequences.py",
              "calibration": "scripts/calibrate_pattern.py", "store": "scripts/build_store.py",
              "noise_maps": "scripts/phase2_noise_maps.py", "response": "scripts/phase2_response.py",
              "noise_maps_resp": "scripts/phase2_noise_maps.py", "samples": "scripts/phase3_prepare.py",
              "background": "scripts/phase3_background.py", "train": "scripts/phase3_train.py",
-             "evaluate": "scripts/phase3_evaluate.py"}
+             "evaluate": "scripts/phase3_evaluate.py", "evaluate_test": "scripts/phase3_evaluate.py --split test"}
 
 
 # --------------------------------------------------------------------------------------- helpers
@@ -502,7 +502,7 @@ class Collector:
             except Exception:
                 trains = []
             names = [n for n in PIPELINE_ORDER if n != "train"]
-            names = names[:names.index("evaluate")] + sorted(set(trains) | {k for k in states if k.startswith("train:")}) + ["evaluate"]
+            names = names[:names.index("evaluate")] + sorted(set(trains) | {k for k in states if k.startswith("train:")}) +                 ["evaluate"] + (["evaluate_test"] if "evaluate_test" in states else [])
             steps, running_log = [], None
             for n in names:
                 j, mt = states.get(n, ({}, 0))
@@ -623,9 +623,9 @@ SERIES = [GOLD, BLUE, GREEN, VIOLET, "#ff9f43", "#48dbfb", RED, "#c8d6e5"]
 SHORT = {"manifest": "Manifest", "frames": "Frames", "registration": "Registration", "sequences": "Splits",
          "calibration": "Calibration", "store": "Store", "noise_maps": "Noise maps", "response": "Response",
          "noise_maps_resp": "Trusted", "samples": "Samples", "background": "Background", "train": "Train",
-         "evaluate": "Evaluate"}
+         "evaluate": "Evaluate", "evaluate_test": "Test (once)"}
 GROUP = {"manifest": "ARCHIVE", "frames": "ARCHIVE", "samples": "LEARNING", "background": "LEARNING",
-         "train": "LEARNING", "evaluate": "LEARNING"}
+         "train": "LEARNING", "evaluate": "LEARNING", "evaluate_test": "LEARNING"}
 
 
 def _mix(c1, c2, a):

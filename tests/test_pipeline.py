@@ -19,9 +19,13 @@ def _row(rows, stage):
 
 def test_fresh_project_runs_everything(tmp_outputs):
     st, fps, rows = pipeline.plan("c0")
-    assert all(r["action"] == "run" for r in rows)
+    assert all(r["action"] == "run" for r in rows if r["stage"] != "evaluate_test")
     assert _row(rows, "registration")["why"] == "never run"
-    assert list(st)[0] == "manifest" and list(st)[-1] == "evaluate"
+    assert list(st)[0] == "manifest" and list(st)[-2] == "evaluate"
+    # the sealed test split is only evaluated when asked for
+    assert _row(rows, "evaluate_test")["action"] == "skip"
+    _, _, rows = pipeline.plan("c0", with_test=True)
+    assert _row(rows, "evaluate_test")["action"] == "run"
 
 
 def test_up_to_date_stage_is_skipped_and_change_reruns(tmp_outputs):

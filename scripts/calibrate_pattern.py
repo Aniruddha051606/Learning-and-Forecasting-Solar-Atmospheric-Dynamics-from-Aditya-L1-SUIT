@@ -10,8 +10,10 @@ that recipe to one data set without looking outside it:
   2. per frame, the relative high-pass residual and the smoothed level (suitdyn.flat.frame_residuals);
   3. per pixel, the median over frames of both; pattern = high-pass(relative x level) for 'additive'
      (high-pass(relative) for 'multiplicative'), NaN-aware, at [calibration] pattern_highpass_px;
-  4. quality gate: the same pattern from two interleaved halves of the frames must agree (correlation on
-     the disk >= [calibration] pattern_min_split_half_r), else the step fails.
+  4. quality gates: the same pattern from two interleaved halves of the frames must agree (correlation on
+     the disk >= [calibration] pattern_min_split_half_r: the estimate is not noise-limited), and from the EARLY
+     and the LATE half of the training span (>= pattern_min_time_r: the pattern did not change over the data
+     set, e.g. at an instrument-state change like the one on 24 Sep, PHASE1 A11); else the step fails.
 Writes outputs/datasets/<name>/calibration/nb03_pattern.npy and nb03_pattern.json (mode, frames and
 their hash, split-half r, rms, provenance). The per-frame residual stacks are temporary (~17 MB per
 frame) and are removed at the end unless --keep-cache.
@@ -96,7 +98,7 @@ def main():
     print(f"residuals of {n} training frames ({time.time() - t0:.0f} s)", flush=True)
 
     idx = np.arange(n)
-    groups = {"all": idx, "A": idx[0::2], "B": idx[1::2]}
+    groups = {"all": idx, "A": idx[0::2], "B": idx[1::2], "early": idx[:n // 2], "late": idx[n // 2:]}
     rel = medians(rel_path, n, groups)
     level = medians(sm_path, n, {"all": idx})["all"]
     hp = float(CFG["calibration"]["pattern_highpass_px"])
@@ -106,6 +108,9 @@ def main():
     pa, pb = make(rel["A"]), make(rel["B"])
     m = np.isfinite(pa) & np.isfinite(pb) & (np.abs(rel["all"]) < 0.5)
     r_half = float(np.corrcoef(pa[m], pb[m])[0, 1])
+    pe, pl = make(rel["early"]), make(rel["late"])
+    mt = np.isfinite(pe) & np.isfinite(pl) & (np.abs(rel["all"]) < 0.5)
+    r_time = float(np.corrcoef(pe[mt], pl[mt])[0, 1])
 
     path = atomic.save_npy(cal / "nb03_pattern.npy", pattern)
     info = {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "mode": mode,
@@ -114,15 +119,20 @@ def main():
             "frames_sha256": hashlib.sha256("\n".join(sel.frame_id).encode()).hexdigest(),
             "span": [str(sel.t.min()), str(sel.t.max())], "split_half_r": r_half,
             "min_split_half_r": CFG["calibration"].get("pattern_min_split_half_r", 0.8),
+            "early_late_r": r_time, "min_early_late_r": CFG["calibration"].get("pattern_min_time_r", 0.8),
+            "early_late_split": str(sel.t.iloc[n // 2]),
             "rms": float(np.nanstd(pattern)), "valid_pixels": int(np.isfinite(pattern).sum()),
             "seconds": round(time.time() - t0, 1), **CFG["_meta"]}
     atomic.write_json(cal / "nb03_pattern.json", info)
     if not a.keep_cache:
         for p in (rel_path, sm_path):
             p.unlink(missing_ok=True)
-    print(json.dumps({k: info[k] for k in ("mode", "frames", "split_half_r", "rms", "seconds")}, indent=1))
+    print(json.dumps({k: info[k] for k in ("mode", "frames", "split_half_r", "early_late_r", "rms", "seconds")}, indent=1))
     if r_half < info["min_split_half_r"]:
         sys.exit(f"split-half agreement {r_half:.3f} < {info['min_split_half_r']}: pattern not reliable")
+    if r_time < info["min_early_late_r"]:
+        sys.exit(f"early/late agreement {r_time:.3f} < {info['min_early_late_r']}: the pattern changed within the "
+                 f"training span (split near {info['early_late_split']}); calibrate per period or shorten the data set")
 
 
 if __name__ == "__main__":

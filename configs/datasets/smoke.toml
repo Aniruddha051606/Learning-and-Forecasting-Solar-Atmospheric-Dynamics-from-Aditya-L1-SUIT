@@ -18,6 +18,10 @@ drop_program_first_frame = true
 margin_h = 1
 
 [split]
+# Each split starts at least this long after the previous one ends: solar structure persists for hours,
+# so adjacent splits would share solar states. Longer than the longest horizon (3.8 h) plus the context.
+# smoke only tests the machinery: 4 h would drop its whole 2-h test split, so the embargo is shorter here
+embargo_h = 1.0
 # Train: programs 151 (23 Sep evening), 147 and 139 (24 Sep); the last run (139) becomes the hold-out.
 train = ["2026-09-23 16:00", "2026-09-24 14:30"]
 val = ["2026-09-24 16:00", "2026-09-24 23:45"]
