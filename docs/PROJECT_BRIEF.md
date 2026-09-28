@@ -226,7 +226,7 @@ Research studies from Phases 0-2 (not in the pipeline): `phase0_audit.py`, `eda.
 `phase2_calibration.py`, `phase2_calibration_followup.py`, `phase2_seam.py`, `phase2_floor_origin.py`,
 `phase2_largescale.py`, `phase2_baselines.py`, `sync_archive.py` (unused).
 
-### `tests/` (pytest, 36 tests)
+### `tests/` (pytest, 35 tests)
 Phase 1-2: baselines, flat, geometry, largescale, manifest (incl. span limits), motion, qc, register,
 sequences. Pipeline and learning: `test_ml_geometry.py` (GPU derotation = NumPy), `test_ml_data_background.py`
 (sample bank; the solver recovers a planted background), `test_ml_thermal.py` (controller with a fake
