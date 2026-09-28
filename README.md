@@ -12,8 +12,12 @@ comes at the end. Findings so far are in `docs/PHASE1.md` … `docs/PHASE3.md`; 
 `docs/PROJECT_BRIEF.md`.
 
 ## Rules the code enforces
-- Splits by time, cut only inside observing gaps. The **test split is sealed** (hash + unseal log) and a
-  rebuild can never silently change it.
+- Splits by time, cut only inside observing gaps, with an **embargo** (default 4 h, longer than the longest
+  horizon) between splits and before the hold-out run. The **test split is sealed** (hash + unseal log); a
+  rebuild can never silently change it, and it is evaluated only with `--with-test`: the first read records
+  the model set, and reading it again with different models is refused unless explicitly overridden (logged).
+- **One pointing per data set:** the Level-1 background depends on where the Sun sits on the detector, so a
+  data set that mixes pointing clusters is refused (`scripts/pointing_modes.py` lists them per day).
 - Every data set is **self-contained**: registration, QC statistics, calibration and every later product use
   only frames inside the data set's time span, and the calibration only its training split.
 - Models are scored against the **strongest** of several physical baselines, including a background-aware
@@ -28,6 +32,9 @@ python -m suitdyn plan   --dataset c0            # what would run and why
 python -m suitdyn run    --dataset c0 --detach   # the whole pipeline, detached from the terminal
 python -m suitdyn status --dataset c0
 python -m suitdyn run    --dataset smoke --smoke # quick end-to-end check on ~1.5 days of real data
+python -m suitdyn run    --dataset c0 --with-test --detach   # the final run: also the one-time test evaluation
+python scripts/pointing_modes.py --scan --from 2026-09-10 --to 2026-09-28   # pointings per day, before defining data sets
+python scripts/thermal_benchmark.py --note "cooling pad"     # sustainable training speed on this laptop
 python -m pytest tests
 ```
 Data sets: `configs/datasets/<name>.toml` (`v0` offset pointing 23-25 Sep, `c0` centred pointing 19-22 Sep,
