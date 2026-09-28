@@ -42,8 +42,12 @@ convlstm_hidden = 32
 [train]
 inputs = "bg"             # "plain": derotate whole frames; "bg": rot(F - S) + S (background-aware B1)
 seeds = [0, 1, 2]
-epochs = 30
-patience = 6
+# With epoch_fraction = 0.25 an "epoch" is a quarter of the training set: 100 epochs = 25 full passes (the
+# ConvLSTM needed ~25 before) and patience 16 = 4 full passes without improvement on the hold-out run.
+epochs = 100
+patience = 16
+# Check the hold-out run every this many epochs (always at the last one); halves its overhead.
+eval_every = 2
 batch = 8
 lr = 3.0e-4
 weight_decay = 1.0e-4

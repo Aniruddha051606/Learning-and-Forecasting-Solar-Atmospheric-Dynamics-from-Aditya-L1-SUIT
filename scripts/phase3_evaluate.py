@@ -166,8 +166,7 @@ def main():
     runs = load_runs(bank, dev)
     rho = torch.sqrt(torch.clamp(1 - bank.mu ** 2, min=0))
     inner = bank.mu > float(np.sqrt(1 - E["disk_rho_max"] ** 2))
-    th = thermal.Thermal(P3["thermal"]["max_c"], P3["thermal"]["resume_c"], P3["thermal"]["target_c"],
-                         sync=torch.cuda.synchronize if dev.startswith("cuda") else None)
+    th = thermal.controller(P3["thermal"], dev, sync=torch.cuda.synchronize if dev.startswith("cuda") else None)
     fp = None
     if a.split == "test":
         ids_all, fp = test_samples(bank, a.reason, a.allow_new_models, runs, out_dir)
@@ -260,7 +259,8 @@ def main():
             cm = np.nan
             if mh is not None:
                 ok2 = ok & torch.isfinite(mh)
-                cm = float(np.corrcoef(mean[ok2].cpu().numpy(), mh[ok2].cpu().numpy())[0, 1]) if int(ok2.sum()) > 100 else np.nan
+                a1, a2 = mean[ok2].cpu().numpy(), mh[ok2].cpu().numpy()
+                cm = float(np.corrcoef(a1, a2)[0, 1]) if len(a1) > 100 and a1.std() > 0 and a2.std() > 0 else np.nan
             crot.append({"model_run": name, "horizon": h, "fixed_share": fixed, "corr_with_M": cm})
         # shuffle and frozen
         ctrl = []

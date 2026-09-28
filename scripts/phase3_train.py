@@ -102,8 +102,7 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=T["lr"], weight_decay=T["weight_decay"])
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=T["lr"], total_steps=a.epochs * per_epoch, pct_start=0.1)
     rng = np.random.default_rng(a.seed)
-    th = thermal.Thermal(TH["max_c"], TH["resume_c"], TH["target_c"],
-                         sync=torch.cuda.synchronize if dev.startswith("cuda") else None)
+    th = thermal.controller(TH, dev, sync=torch.cuda.synchronize if dev.startswith("cuda") else None)
     ho_ids = ho if not a.max_batches else ho[:a.max_batches * T["batch"]]
     zero = lambda x, m, mu, h: torch.zeros_like(x[:, -1:])  # noqa: E731  (predicting 0 = the B1 baseline)
     zero.train = zero.eval = lambda *_, **__: None
@@ -129,17 +128,25 @@ def main():
             f"train {name}", item=f"epoch {ep + 1}/{a.epochs}, batch {bi + 1}/{nb}", i=bi, n=nb, epoch=ep,
             gpu_temp=thermal.gpu_temp(), duty=round(th.d, 3), best_holdout_skill=None if not log else round(1 - best / b1_holdout, 4))
         tl = run_batches(model, bank, order, a.inputs, T["batch"], th, True, opt, sched, T["grad_clip"], T["bf16"], rep)
-        hl = run_batches(model, bank, ho_ids, a.inputs, 16, th, bf16=T["bf16"])
-        log.append({"epoch": ep, "train_l1": tl, "holdout_l1": hl, "holdout_skill_vs_B1": 1 - hl / b1_holdout,
-                    "lr": sched.get_last_lr()[0], "seconds": round(time.time() - t0, 1), **th.reset()})
-        print(json.dumps(log[-1]), flush=True)
-        if hl < best:
-            best, best_ep, bad = hl, ep, 0
-            tmp = out / "best.tmp"
-            torch.save(model.state_dict(), tmp)
-            tmp.replace(out / "best.pt")
+        # the hold-out pass is checked every eval_every epochs (and always at the last one); patience counts
+        # epochs, so a check without improvement adds eval_every to it
+        every = max(1, int(T.get("eval_every", 1)))
+        if (ep + 1) % every and ep + 1 < a.epochs:
+            log.append({"epoch": ep, "train_l1": tl, "holdout_l1": None, "holdout_skill_vs_B1": None,
+                        "lr": sched.get_last_lr()[0], "seconds": round(time.time() - t0, 1), **th.reset()})
+            print(json.dumps(log[-1]), flush=True)
         else:
-            bad += 1
+            hl = run_batches(model, bank, ho_ids, a.inputs, 16, th, bf16=T["bf16"])
+            log.append({"epoch": ep, "train_l1": tl, "holdout_l1": hl, "holdout_skill_vs_B1": 1 - hl / b1_holdout,
+                        "lr": sched.get_last_lr()[0], "seconds": round(time.time() - t0, 1), **th.reset()})
+            print(json.dumps(log[-1]), flush=True)
+            if hl < best:
+                best, best_ep, bad = hl, ep, 0
+                tmp = out / "best.tmp"
+                torch.save(model.state_dict(), tmp)
+                tmp.replace(out / "best.pt")
+            else:
+                bad += every
         ck = {"model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
               "rng": rng.bit_generator.state, "torch_rng": torch.get_rng_state(),
               "cuda_rng": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,

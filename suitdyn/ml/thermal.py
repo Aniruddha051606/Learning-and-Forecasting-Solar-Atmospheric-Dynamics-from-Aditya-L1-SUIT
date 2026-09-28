@@ -53,6 +53,25 @@ def gpu_temp():
         return float("nan")
 
 
+class NoThermal:
+    """Stand-in on the CPU (tests): nothing to throttle."""
+
+    d = 1.0
+
+    def check(self):
+        pass
+
+    def reset(self):
+        return {}
+
+
+def controller(cfg, device, sync=None):
+    """The duty-cycle controller for CUDA work, a no-op elsewhere. cfg: configs/phase3.toml [thermal]."""
+    if not str(device).startswith("cuda"):
+        return NoThermal()
+    return Thermal(cfg["max_c"], cfg["resume_c"], cfg["target_c"], sync=sync)
+
+
 class Thermal:
     def __init__(self, max_temp, resume_temp, target, d0=0.1, d_min=0.03, sensor=gpu_temp, sleep=time.sleep,
                  clock=time.time, sync=None):
