@@ -192,31 +192,43 @@ def main():
           f"{len(done_roi)} reused", flush=True)
 
     t0 = time.time()
-    with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
-        res = []
-        for k, out in enumerate(ex.map(full_frame, jobs, chunksize=4)):
-            res.append(out)
-            progress.report("process_frames: full-disk", item=jobs[k][0].get("file"), i=k, n=len(jobs),
-                            path=jobs[k][0].get("path"))
-        roi_jobs = [r.to_dict() for _, r in roi_todo.iterrows()]
-        roi_res = []
-        for k, out in enumerate(ex.map(roi_frame, roi_jobs, chunksize=32)):
-            roi_res.append(out)
-            progress.report("process_frames: ROI", item=roi_jobs[k].get("file"), i=k, n=len(roi_jobs),
-                            path=roi_jobs[k].get("path"))
-    new = pd.DataFrame([r for r, _ in res]) if res else pd.DataFrame(columns=["file"])
-    seams = pd.DataFrame([s for _, ss in res for s in ss])
     keep = ["file", "t", "obsid", "OBS_MODE", "FTR_NAME", "frame", "NAXIS1", "CMD_EXPT", "MEAS_EXP", "CRPIX1", "CRPIX2",
             "R_SUN", "CROTA2", "RSUN_OBS", "DSUN_OBS", "clip_lo", "clip_hi", "sha256"]
-    new = full[keep + ["prev_file"]].merge(new, on="file", how="inner").assign(proc_sig=sig)
-    new_roi = roi_todo[keep + ["ROI_ID", "X1", "Y1"]].merge(pd.DataFrame(roi_res or [{"file": None}]), on="file",
-                                                             how="inner").assign(proc_sig=sig)
-    frames = pd.concat([d for d in (old_full, new) if d is not None and len(d)], ignore_index=True).sort_values("t")
-    roi_df = pd.concat([d for d in (old_roi, new_roi) if d is not None and len(d)], ignore_index=True).sort_values("t")
-    seams = pd.concat([d for d in (old_seams, seams) if d is not None and len(d)], ignore_index=True)
-    atomic.to_parquet(frames, out / "frames_full.parquet")
-    atomic.to_parquet(roi_df, out / "frames_roi.parquet")
-    atomic.to_parquet(seams, out / "seam_profiles.parquet")
+
+    def save(res, roi_res):
+        """Earlier rows + everything finished so far, written atomically. Called every few minutes and at the
+        end, so a crash (or a killed run) loses at most a few minutes: the next run reuses the saved rows."""
+        new = pd.DataFrame([r for r, _ in res]) if res else pd.DataFrame(columns=["file"])
+        new_seams = pd.DataFrame([x for _, ss in res for x in ss])
+        new = full[keep + ["prev_file"]].merge(new, on="file", how="inner").assign(proc_sig=sig)
+        new_roi = roi_todo[keep + ["ROI_ID", "X1", "Y1"]].merge(pd.DataFrame(roi_res or [{"file": None}]), on="file",
+                                                                 how="inner").assign(proc_sig=sig)
+        fr_ = pd.concat([d for d in (old_full, new) if d is not None and len(d)], ignore_index=True).sort_values("t")
+        ro_ = pd.concat([d for d in (old_roi, new_roi) if d is not None and len(d)], ignore_index=True).sort_values("t")
+        se_ = pd.concat([d for d in (old_seams, new_seams) if d is not None and len(d)], ignore_index=True)
+        atomic.to_parquet(fr_, out / "frames_full.parquet")
+        atomic.to_parquet(ro_, out / "frames_roi.parquet")
+        atomic.to_parquet(se_, out / "seam_profiles.parquet")
+        return fr_, ro_
+
+    res, roi_res, last_save = [], [], time.time()
+    roi_jobs = [r.to_dict() for _, r in roi_todo.iterrows()]
+    with ProcessPoolExecutor(CFG["run"]["workers"]) as ex:
+        for k, result in enumerate(ex.map(full_frame, jobs, chunksize=4)):
+            res.append(result)
+            progress.report("process_frames: full-disk", item=jobs[k][0].get("file"), i=k, n=len(jobs),
+                            path=jobs[k][0].get("path"))
+            if time.time() - last_save > 300:
+                save(res, roi_res)
+                last_save = time.time()
+        for k, result in enumerate(ex.map(roi_frame, roi_jobs, chunksize=32)):
+            roi_res.append(result)
+            progress.report("process_frames: ROI", item=roi_jobs[k].get("file"), i=k, n=len(roi_jobs),
+                            path=roi_jobs[k].get("path"))
+            if time.time() - last_save > 300:
+                save(res, roi_res)
+                last_save = time.time()
+    frames, roi_df = save(res, roi_res)
     meta = {"full_frames": len(frames), "roi_frames": len(roi_df), "processed_now": [len(jobs), len(roi_todo)],
             "full_errors": int(frames.get("error", pd.Series(dtype=object)).notna().sum()),
             "roi_errors": int(roi_df.get("error", pd.Series(dtype=object)).notna().sum()),

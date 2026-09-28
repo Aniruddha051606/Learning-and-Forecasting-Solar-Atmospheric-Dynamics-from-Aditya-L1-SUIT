@@ -64,3 +64,14 @@ def test_smoke_runs_are_kept_apart(tmp_outputs):
     st = pipeline.stages("c0", smoke=True)
     assert all("runs_smoke" in str(o) for n, s in st.items() if n.startswith("train:") for o in s.outputs)
     assert "eval_smoke" in str(st["evaluate"].outputs[0])
+
+
+def test_only_transient_failures_are_retried(tmp_path):
+    code_bug = tmp_path / "a.log"
+    code_bug.write_text("Traceback (most recent call last):\n  File \"x.py\", line 1\nTypeError: unsupported operand\n")
+    share = tmp_path / "b.log"
+    share.write_text("Traceback (most recent call last):\n  File \"x.py\"\nOSError: [WinError 64] The specified network name is no longer available\n")
+    killed = tmp_path / "c.log"
+    killed.write_text("full-disk: 1274 to process\n")  # no traceback: killed, power cut, native crash
+    assert not pipeline.transient(code_bug)
+    assert pipeline.transient(share) and pipeline.transient(killed)

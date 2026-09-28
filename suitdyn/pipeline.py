@@ -286,6 +286,19 @@ def preflight(ds, st, todo):
     return problems
 
 
+TRANSIENT = ("OSError", "ConnectionError", "ConnectionResetError", "TimeoutError", "BrokenPipeError",
+             "BrokenProcessPool", "PermissionError", "WinError 53", "WinError 59", "WinError 64", "WinError 121",
+             "network", "timed out")
+
+
+def transient(log):
+    """Retry only failures that can go away by themselves (the share, the network, a locked file). A code error
+    such as a TypeError fails the same way every time: retrying it once cost 1.5 h (2026-09-28)."""
+    tail = Path(log).read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
+    last = next((ln for ln in reversed(tail) if ln and not ln.startswith(" ")), "")
+    return any(t in last for t in TRANSIENT) or not any("Error" in ln or "Traceback" in ln for ln in tail)
+
+
 def run_stage(ds, s, fp, smoke, log_dir):
     prev = read_state(ds, s.name)
     args = list(s.args)
@@ -316,7 +329,7 @@ def run_stage(ds, s, fp, smoke, log_dir):
                        outputs={str(o): (Path(o).stat().st_size if Path(o).is_file() else None) for o in s.outputs})
             atomic.write_json(state_path(ds, s.name), rec)
             return True
-        if attempt < s.retries:
+        if attempt < s.retries and transient(log):
             time.sleep(60 * (attempt + 1))
             if s.resume_arg and s.resume_arg not in args:
                 args.append(s.resume_arg)
