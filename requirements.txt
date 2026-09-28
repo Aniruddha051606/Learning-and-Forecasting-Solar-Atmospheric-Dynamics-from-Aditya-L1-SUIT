@@ -1,3 +1,5 @@
+# Install: pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu130
+# (the torch build below comes from PyTorch's CUDA 13.0 wheel index)
 astropy==8.0.1
 matplotlib==3.11.2
 numpy==2.5.3
@@ -9,3 +11,8 @@ scipy==1.18.1
 sunpy==8.0.0
 torch==2.14.0+cu130
 zarr==3.4.0
+# tests
+pytest==9.1.1
+# dashboard (dashboard/build_exe.cmd)
+pillow==12.3.0
+pyinstaller==6.22.3
