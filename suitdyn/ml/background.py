@@ -1,16 +1,4 @@
-"""The static background S: what derotation must NOT move (PHASE3 §3.1, §4b, §4c).
-
-Write each frame as F = solar + S, with S fixed on the registered grid (limb darkening, the offset-mode
-vignetting, the seams, the residual detector pattern). The mean residual of the context-mean baseline over
-many pairs of horizon H is then
-    M(H) = mean(target - B1-avg) ~ S - Rbar_H S,
-with Rbar_H the mean derotation operator of the context frames: solar evolution averages out over many
-pairs, S does not. S is solved from all horizons jointly by least squares with a gradient penalty lambda
-(a Kuhn-Lin-Loranz-type estimate with solar rotation as the known shift). S is determined up to functions
-of latitude alone, which derotation leaves unchanged anyway. The model is additive (PHASE3 §3.2).
-
-M(H) and the scoring run on the device through suitdyn.ml.data.Bank; the sparse solve runs on the CPU.
-"""
+"""The static background S: what derotation must NOT move (PHASE3 §3.1, §4b, §4c)."""
 import numpy as np
 import torch
 from scipy import sparse
@@ -21,7 +9,8 @@ from .. import baselines
 
 def mean_residuals(bank, ids, clip=0.25, batch=16, report=None, tick=None):
     """M(H) for each horizon over the given samples (clipped mean; NaN where fewer than half the pairs of
-    that horizon are valid), plus the median context times and B0 of those pairs."""
+    that horizon are valid), plus the median context times and B0 of those pairs.
+    """
     G = bank.G
     acc = {}
     for n0 in range(0, len(ids), batch):
@@ -46,7 +35,8 @@ def mean_residuals(bank, ids, clip=0.25, batch=16, report=None, tick=None):
 
 def rot_matrix(G, r_ref, b0, dt, pos):
     """Sparse bilinear derotation on the disk pixels (rows: target, cols: source); rows whose source is off
-    the disk are all-zero and flagged invalid."""
+    the disk are all-zero and flagged invalid.
+    """
     (rows, cols), ok = baselines.derotation_coords(G, r_ref, b0, dt)
     tgt = np.flatnonzero(pos.ravel() >= 0)
     rr, cc = rows.ravel()[tgt], cols.ravel()[tgt]
@@ -93,9 +83,7 @@ def disk_index(G, r_ref, rho_max):
 
 
 def solve(M, ops, pos, lam, x0=None, iter_lim=4000, prior=None, shrink=0.0):
-    """S on the disk pixels from {h: M(h)} and {h: (Rbar_h, valid_rows)}; lam weights the gradient penalty.
-    prior/shrink: add shrink * |S - prior|^2 (a pointing group's S is pulled toward the common S, so a group
-    with few pairs stays stable)."""
+    """S on the disk pixels from {h: M(h)} and {h: (Rbar_h, valid_rows)}; lam weights the gradient penalty."""
     G = pos.shape[0]
     Dg = gradient_matrix(pos)
     blocks, rhs = [], []
@@ -123,8 +111,8 @@ def solve(M, ops, pos, lam, x0=None, iter_lim=4000, prior=None, shrink=0.0):
 
 def pointing_groups(px, py, bin_px, min_pairs):
     """Group samples by their target pointing (2048-px units): bins of bin_px; bins with fewer than min_pairs
-    samples are merged into the nearest large bin. Returns (group id per sample, centres (n, 2)). One group
-    when the pointing spread is below one bin: the detector background then sits still on the grid."""
+    samples are merged into the nearest large bin.
+    """
     px, py = np.asarray(px, float), np.asarray(py, float)
     if np.ptp(px) < bin_px and np.ptp(py) < bin_px:
         return np.zeros(len(px), np.int64), np.array([[np.median(px), np.median(py)]])
@@ -145,8 +133,9 @@ def pointing_groups(px, py, bin_px, min_pairs):
 
 def score(bank, ids, S, batch=16, rho_max=None, tick=None):
     """Median per-horizon MAE of B1-avg and of B1-avg-bgS (= mean_k [rot_k(F_k - S) + S]) on the samples,
-    inside rho < rho_max when given (the outer ring is poorly constrained: foreshortening, sources off the disk).
-    S: one map, or (maps, centres) for one map per pointing group."""
+    inside rho < rho_max when given (the outer ring is poorly constrained: foreshortening, sources off the
+    disk).
+    """
     if isinstance(S, tuple):
         bank.set_background_groups(*S)
     else:

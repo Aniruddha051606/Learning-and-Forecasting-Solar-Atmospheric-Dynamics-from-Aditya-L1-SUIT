@@ -1,16 +1,6 @@
 """Phase 2: where on the disk does the instrument, not the Sun, set the forecast error?
 
     python scripts/phase2_noise_maps.py --store v0 [--split val] [--grid-factor 2]
-
-Over every 1-frame window of the split (87 s: the Sun barely changes), in registered coordinates:
-  noise floor map     mean |B1(t+1) − F(t+1)| / disk level
-  pointing map        per-pixel slope of that error against the pointing change between the two
-                      frames (x and y, % per detector pixel). A detector-fixed response (vignetting,
-                      seam, residual pattern) seen through the ±1-10 px pointing motion makes this large;
-                      the Sun does not.
-A "trusted region" mask is derived from pointing sensitivity only (the instrument signature): disk pixels
-below median + 3 robust sigma of the disk-centre distribution. The noise floor is NOT used: plage has a
-higher floor because it is brighter and evolving, and excluding it would remove the science.
 """
 import argparse
 import json

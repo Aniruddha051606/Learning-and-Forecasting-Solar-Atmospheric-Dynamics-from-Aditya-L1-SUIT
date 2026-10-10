@@ -1,16 +1,4 @@
-"""Build the raw-data manifest (headers + SHA-256 of every FITS file).
-
-    python scripts/build_manifest.py
-Writes <out>/manifest.parquet and <out>/manifest_meta.json.
-
-Source of each row (column `source`):
-  archive     read from raw_root, the network share (the archive of record)
-  local_copy  a file not (yet) on the share, taken from the manifest of the untouched local copy
-              ([paths] local_copy_manifest) and still present on disk. The share is being downloaded
-              into; without this fallback, rebuilding from a partial share would silently drop frames
-              of existing data sets. Files present in both are taken from the share (they were
-              checked byte-identical: 10,977 of 10,977 on 2026-09-27).
-"""
+"""Build the raw-data manifest (headers + SHA-256 of every FITS file)."""
 import hashlib
 import json
 import sys

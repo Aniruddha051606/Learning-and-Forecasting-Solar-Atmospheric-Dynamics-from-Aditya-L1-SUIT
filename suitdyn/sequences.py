@@ -1,14 +1,4 @@
-"""Leakage-safe split assignment and window indices for NB03 sequences and multi-filter bursts.
-
-Rules (tests/test_sequences.py checks each):
-  * frames are assigned to a split by time; every split boundary must fall inside an observing gap,
-    so no run of consecutive frames is ever cut by a boundary;
-  * a window (context frames t-K+1..t, target t+H) lies entirely inside one run and one split;
-  * each window stores the elapsed time of every context frame and of the target relative to t, so
-    irregular cadence is visible to every consumer, never hidden behind a frame count;
-  * the test split is sealed: `seal()` writes a hash of its frame list, `windows(..., split="test")`
-    refuses to return test windows unless `unseal=True`, and every unsealed read is logged.
-"""
+"""Leakage-safe split assignment and window indices for NB03 sequences and multi-filter bursts."""
 import hashlib
 import json
 import time
@@ -41,11 +31,9 @@ def assign_splits(t, bounds, max_gap_s):
 
 
 def embargo(t, split, hours, order=("train", "val", "test")):
-    """Frames to drop so that each split starts at least `hours` after the last frame of the splits before it.
-
-    Solar structure persists for hours, so a validation target 15 min after the last training frame is not
-    independent of it. With an embargo longer than the longest horizon plus the context, no window of a later
-    split can see the same solar state as the end of an earlier one. Returns a boolean array (True = drop)."""
+    """Frames to drop so that each split starts at least `hours` after the last frame of the splits before
+    it.
+    """
     t = pd.Series(pd.to_datetime(t)).reset_index(drop=True)
     split = pd.Series(split).reset_index(drop=True)
     drop = np.zeros(len(t), bool)
@@ -62,10 +50,7 @@ def embargo(t, split, hours, order=("train", "val", "test")):
 
 
 def window_index(frames, contexts, horizons, max_gap_s):
-    """All windows (K context frames ending at position i, target at i+H) inside one run and one split.
-
-    `frames`: DataFrame sorted by t with columns frame_id, t, split. Returns one row per window with
-    positions into `frames`, the split, and elapsed seconds of the first context frame and the target."""
+    """All windows (K context frames ending at position i, target at i+H) inside one run and one split."""
     f = frames.reset_index(drop=True)
     r = runs(f.t, max_gap_s)
     ts = (f.t - f.t.iloc[0]).dt.total_seconds().values
@@ -91,8 +76,7 @@ def seal(frames, path):
 
 
 def windows(index, frames, split, seal_path, unseal=False, reason=""):
-    """Windows of one split. Test windows need unseal=True and a reason; the read is appended to the
-    seal file's log, and the test frame list must still match the sealed hash."""
+    """Windows of one split."""
     if split == "test":
         if not unseal:
             raise PermissionError("test split is sealed; pass unseal=True with a reason")
@@ -106,9 +90,7 @@ def windows(index, frames, split, seal_path, unseal=False, reason=""):
 
 
 def burst_snapshots(full_frames, max_span_s=600):
-    """Group unbinned multi-filter frames into bursts. One row per (burst, filter) for ALL filters in
-    ORDER: a filter not observed in a burst is an explicit row with present=False and no frame, never a
-    filled value. Each present row keeps its own observation time."""
+    """Group unbinned multi-filter frames into bursts."""
     f = full_frames.sort_values("t").reset_index(drop=True)
     dt = f.t.diff().dt.total_seconds().fillna(np.inf).values
     burst = np.cumsum(dt > max_span_s)

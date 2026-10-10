@@ -1,19 +1,7 @@
-"""Post-hoc tests D1 (correction transplant) and D2 (edge-preserving denoising) (docs/PREREGISTRATION.md, Addendum D).
+"""Post-hoc tests D1 (correction transplant) and D2 (edge-preserving denoising) (docs/PREREGISTRATION.md,
+Addendum D).
 
     python scripts/posthoc_shuffle_denoise.py --dataset final_offset [--train-per-horizon 100] [--device cuda]
-
-D1  each model's correction computed on ANOTHER validation window (same horizon, the farther half in time) is added
-    to the correct window's background-aware B1  ->  <model>-transplant. Does the useful correction need the right Sun?
-    plus <model>-lowpass / <model>-transplant-lowpass: the own and the transplanted correction smoothed (sigma 2 px),
-    which removes the part that cancels the frame's own pixel noise (amendment), and the decisive pair relative to the
-    strongest baseline: <model>-avglp = B1-avg-bgS + G2(model - B1-avg-bgS), <model>-transplant-avglp = the same
-    correction taken from the other window (amendment 2).
-D2  the strongest baseline (B1-avg-bgS) through NaN-aware median (3x3, 5x5) and bilateral filters (5x5, spatial sigma
-    1 px, range sigma 1 and 2 x the robust noise level); the best filter is chosen on training windows, then scored on
-    validation  ->  B1-avg-bgS-<filter>. Is the advantage explainable as denoising?
-Validation only, with the evaluation's five baselines, mask, regions and block bootstrap (scripts/phase3_evaluate.py),
-so the full-model rows reproduce outputs/datasets/<name>/phase3/eval/summary.csv. Writes phase3/posthoc/
-shuffle_denoise_{summary.csv,errors.parquet,meta.json}. The test split is not read.
 """
 import argparse
 import os

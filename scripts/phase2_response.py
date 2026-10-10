@@ -1,14 +1,6 @@
 """Phase 2: build the pointing-response correction from the TRAINING split and test it on validation.
 
     python scripts/phase2_response.py --store v0
-
-1. Slope maps from outputs/phase2/noise_maps/noise_maps_<store>_train_g2.npz (run phase2_noise_maps.py
-   --split train first), smoothed; reference pointing = median training pointing.
-2. Test on the validation split (never used to build it):
-   a) whole-disk level vs pointing: R² of the detrended disk median on the pointing within each run,
-      before and after correction (PHASE2.md §1.4 found a median R² of 0.38 before);
-   b) the validation noise maps are recomputed with the correction applied by phase2_noise_maps.py
-      --response (run separately), and their pointing sensitivity is compared.
 """
 import argparse
 import json

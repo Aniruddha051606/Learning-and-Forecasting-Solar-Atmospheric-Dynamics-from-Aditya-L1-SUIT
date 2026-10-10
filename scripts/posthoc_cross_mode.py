@@ -1,13 +1,6 @@
-"""Post-hoc test: cross-mode transfer. Models trained on one pointing mode, scored on the other mode's data.
+"""Post-hoc test: cross-mode transfer.
 
     python scripts/posthoc_cross_mode.py --train final_offset --on final_centred [--device cpu] [--max-samples N]
-
-If a model learned the Sun, it should keep (some of) its skill on data taken with the other pointing; if it
-learned the detector background of its own pointing, its skill should drop or turn negative there. In the --on
-data set's validation windows, with its own static background for the background-aware inputs, this scores:
-the --train data set's models and seed ensembles (tagged '@<train>'), the --on data set's own models (if
-trained), and the baselines, all in one pass with one mask (scripts/phase3_evaluate.py regions and metrics).
-Writes outputs/datasets/<on>/phase3/posthoc/cross_from_<train>_errors.parquet and _summary.csv.
 """
 import argparse
 import hashlib

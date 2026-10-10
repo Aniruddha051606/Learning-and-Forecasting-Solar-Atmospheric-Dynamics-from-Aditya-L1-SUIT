@@ -1,16 +1,4 @@
-"""GPU thermal safety for training on a laptop that shut down once under full load (2026-09-27 13:08).
-
-gpu_temp() reads the driver's NVML library in-process (~0.02 ms; nvidia-smi only as a fallback).
-
-Thermal holds the GPU near a target temperature with a smooth duty cycle, plus a hard stop. On/off pausing
-alone did not work: every restart ran the GPU at full power and the die jumped from below the trip point to
-95-96 C before the next reading. Before every batch, the duty fraction d is lowered when the GPU is above
-`target` and raised slowly below it, and the loop sleeps work_time * (1/d - 1), so the GPU runs steadily at
-part power. `max_temp` is a hard stop: pause until below `resume_temp`, then halve d. It starts low and
-ramps slowly: a synthetic load went from 54 C to 90 C within 10 s at d = 0.5; this laptop holds ~65-72 C at
-d ~ 0.07-0.10. Call check() before every training AND evaluation batch (the unchecked evaluation pass once
-overshot to 90 C). The sensor, clock and sleep are injectable so the logic is unit-tested without a GPU.
-"""
+"""GPU thermal safety for training on a laptop that shut down once under full load (2026-09-27 13:08)."""
 import ctypes
 import os
 import subprocess
@@ -65,10 +53,37 @@ class NoThermal:
         return {}
 
 
+class Monitor:
+    """[thermal] enabled = false: no throttling and no pauses; the GPU temperature is still read and logged."""
+
+    d = 1.0
+
+    def __init__(self, sensor=gpu_temp):
+        self.sensor = sensor
+        self._zero()
+
+    def _zero(self):
+        self.peak, self.temps = 0.0, []
+
+    def check(self):
+        t = self.sensor()
+        if t == t:
+            self.peak = max(self.peak, t)
+            self.temps.append(t)
+
+    def reset(self):
+        out = {"gpu_temp_peak": self.peak, "gpu_temp_mean": round(float(np.mean(self.temps)), 1) if self.temps else None,
+               "duty_mean": 1.0, "thermal_pause_s": 0.0, "throttle_sleep_s": 0.0}
+        self._zero()
+        return out
+
+
 def controller(cfg, device, sync=None):
-    """The duty-cycle controller for CUDA work, a no-op elsewhere. cfg: configs/phase3.toml [thermal]."""
+    """The duty-cycle controller for CUDA work, a no-op elsewhere."""
     if not str(device).startswith("cuda"):
         return NoThermal()
+    if not cfg.get("enabled", True):
+        return Monitor()
     return Thermal(cfg["max_c"], cfg["resume_c"], cfg["target_c"], sync=sync)
 
 

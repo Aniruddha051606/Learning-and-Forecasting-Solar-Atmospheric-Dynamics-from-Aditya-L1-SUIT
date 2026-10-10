@@ -1,17 +1,4 @@
-"""Samples assembled on the fly from the frame cache: no precomputed sample arrays.
-
-The cache (scripts/phase3_prepare.py) holds every frame once (frames_<G>.npy, float16, NaN = invalid) and a
-sample index (samples_<G>.parquet: split set, horizon, run, the K context frame indices, the target index,
-the elapsed seconds from each context frame to the target, B0). A batch is built on the device:
-
-    x_plain = derotate(context)                       every pixel moved by solar rotation to the target time
-    x_bg    = derotate(context - S) + S               the background-aware version: the static background S
-            = x_plain - derotate(S) + S               (fixed on the grid) is not moved (PHASE3 §3.1, §4b)
-    y       = target frame,   valid = y and all K context frames finite
-
-Precomputed sample arrays took 13-17 GB per data set (each frame stored dozens of times); the frame cache
-is 0.6-1 GB. derotate() is suitdyn.ml.geometry (checked against the numpy baseline in the tests).
-"""
+"""Samples assembled on the fly from the frame cache: no precomputed sample arrays."""
 import json
 from pathlib import Path
 
@@ -51,7 +38,7 @@ class Bank:
         self.K = self.ctx.shape[1]
 
     def add_samples(self, idx):
-        """Append samples built by suitdyn.ml.samples.build (the one-time test evaluation). Returns their ids."""
+        """Append samples built by suitdyn.ml.samples.build (the one-time test evaluation)."""
         n0 = len(self.index)
         self._set_index(pd.concat([self.index, idx], ignore_index=True))
         if self.S_groups is not None:
@@ -69,7 +56,8 @@ class Bank:
     def set_background_groups(self, S_groups, centres):
         """One background per pointing group (suitdyn/ml/background.py): the detector background moves with
         the pointing, so each sample uses the background of the group nearest to its target's pointing
-        (px, py). centres: (n_groups, 2) pointing of each group, 2048-px units."""
+        (px, py).
+        """
         self.S_groups = torch.as_tensor(np.asarray(S_groups, np.float32)).to(self.device)
         self.centres = np.asarray(centres, float)
         self.S = self.S_groups[0] if len(self.S_groups) == 1 else self.S_groups.mean(0)
@@ -87,8 +75,7 @@ class Bank:
         return f.to(self.device, non_blocking=True).float()
 
     def batch(self, ids, inputs="plain", ctx_override=None):
-        """ids: sample indices. inputs: 'plain' or 'bg' (x is then the background-aware context).
-        ctx_override: (len(ids), K) frame indices to use as context instead (negative controls)."""
+        """ids: sample indices."""
         ids = np.asarray(ids)
         B = len(ids)
         ctx = self.ctx[ids] if ctx_override is None else np.asarray(ctx_override)
@@ -116,7 +103,8 @@ class Bank:
 
 def load_background(bank, npz_path):
     """Set the bank's static background from scripts/phase3_background.py output: one map per pointing group
-    when the stage kept grouping, else the single map. Returns the loaded npz."""
+    when the stage kept grouping, else the single map.
+    """
     z = np.load(npz_path)
     if "S_groups" in z.files and len(z["S_groups"]) > 1:
         bank.set_background_groups(z["S_groups"], z["centres"])
@@ -125,6 +113,11 @@ def load_background(bank, npz_path):
     return z
 
 
+def input_mask(x):
+    """The models' validity channel: pixels finite in every context frame."""
+    return torch.isfinite(x).all(1, keepdim=True)
+
+
 def model_inputs(b):
-    """(x with NaN -> 0, validity mask as float), the form the models take."""
-    return torch.nan_to_num(b["x"], nan=0.0), b["valid"].float()
+    """(x with NaN -> 0, input validity mask as float), the form the models take."""
+    return torch.nan_to_num(b["x"], nan=0.0), input_mask(b["x"]).float()

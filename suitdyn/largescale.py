@@ -1,17 +1,4 @@
-"""Self-calibration of the NB03 large-scale detector response from the frames themselves.
-
-Model, fitted in log space on sampled quiet-disk pixels of many frames:
-    log I_k(x) = r(x) + q(mu_k(x)) + a_k
-  r(x)   large-scale log response on the detector (2048 binned grid): bilinear splines on a coarse
-         knot grid, with SEPARATE knot sets left and right of the vertical quadrant seam (x = 1024) so a
-         row-dependent seam step is allowed;
-  q(mu)  one quiet-Sun limb-darkening profile, shared by all frames (linear spline in mu);
-  a_k    per-frame log level (program steps, exposure, whole-disk variation).
-What makes r and q separable: the Sun sits at two detector positions 480 px apart (the two pointing
-modes) plus the ±10 px pointing oscillation, so the same mu falls on different detector pixels.
-Degeneracies (one global constant between r, q and a) are removed by constraint rows; knots the data
-do not reach are held by a smoothness penalty.
-"""
+"""Self-calibration of the NB03 large-scale detector response from the frames themselves."""
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import lsqr
@@ -110,7 +97,7 @@ class Basis:
 
 
 def fit(basis, x, y, mu, frame, logi, n_frames, smooth=3.0, huber=0.03, irls=3):
-    """Robust (Huber-weighted) least squares for [r, q, a]. Returns coefficients and final residuals."""
+    """Robust (Huber-weighted) least squares for [r, q, a]."""
     A = basis.design(x, y, mu, frame, n_frames)
     S = basis.smoothness(n_frames, smooth)
     C = basis.constraints(n_frames)

@@ -2,34 +2,6 @@
 
     python scripts/phase3_evaluate.py [--device cuda] [--max-samples N]
     python scripts/phase3_evaluate.py --split test --reason "final run" [--allow-new-models]
-
-Settings: configs/phase3.toml [eval], [controls]. The same windows for every method:
-  B1              last context frame derotated to the target time
-  B1-avg          mean of the K derotated context frames
-  B1-avg-LDadd    B1-avg + mean_k (q - rot_k q): the limb-darkening profile q(mu) kept fixed (additive)
-  B1-avg-bgS      mean_k [rot_k(F_k - S) + S]: the static background kept fixed (phase3_background.py; one S per
-                  pointing group when that stage kept grouping)
-  B1-avg-clim     B1-avg + M(H): the mean train + hold-out residual map of that horizon
-  <run>           every finished training run and, per model and inputs, the seed ensemble (<model>_<inputs>-ens)
-Regions, all inside r < [eval] disk_rho_max (the limb ring is unreliable for any derotation): disk, trusted
-(Phase 2 trusted region), plage (B1 above plage_contrast x its Gaussian-smoothed level: defined from the
-forecast and relative to the local level, so the vignetting does not bias it), and three rings by distance
-from disk centre: ring_inner (r < 0.5), ring_mid (0.5-0.75), ring_outer (0.75-0.9).
-Metrics per window: MAE (primary), RMSE, gradient correlation (agreement of the spatial structure).
-Skill = 1 - error / error of a reference; the median with a 95 % interval from a bootstrap over (run, hour)
-blocks, against B1-avg and against the STRONGEST baseline (lowest median MAE among [eval] baselines).
-Negative controls (validation only; a model that shows skill here has learned an artefact):
-  shuffle     context from another validation sample of the same horizon; skill over its own B1 shows how much
-              of the correction does not depend on the solar content
-  frozen      target = the model's own B1 plus real frame-to-frame noise (a Sun that does not evolve); the right
-              answer is to change nothing, so skill over B1 must be <= 0
-  corotation  corrections that follow the Sun average out over many windows; a correction fixed on the grid
-              (an instrument or geometry artefact) does not. fixed_share = power of the mean correction map /
-              mean power of the corrections, and its correlation with the static residual map M(H)
-Test: only with --split test and a reason. Windows come through the seal (hash checked, read logged); the first
-read records the model set, and a later read with other models is refused unless --allow-new-models (recorded).
-Writes outputs/datasets/<name>/phase3/eval[_test][_smoke]/: errors.parquet, summary.csv, controls.csv,
-corotation.csv, eval_meta.json (and test_reads.json for the test split).
 """
 import argparse
 import hashlib
@@ -115,7 +87,7 @@ def predict(runs, b, bank, bf16):
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
         for name, kind, inputs, m, *_ in runs:
             x = b["x_bg"] if inputs == "bg" else b["x_plain"]
-            xi, mi = torch.nan_to_num(x), (torch.isfinite(b["y"]) & torch.isfinite(x).all(1, keepdim=True)).float()
+            xi, mi = torch.nan_to_num(x), data.input_mask(x).float()  # inputs only (Addenda H, I)
             r = m(xi, mi, bank.mu[None, None], b["h"]).float()[:, 0]
             out[name], corr[name] = x[:, -1] + r, r
             ens.setdefault(f"{kind}_{inputs}-ens", []).append(out[name])

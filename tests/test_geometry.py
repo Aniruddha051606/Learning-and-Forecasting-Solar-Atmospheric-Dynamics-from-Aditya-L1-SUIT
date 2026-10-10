@@ -1,12 +1,12 @@
 import numpy as np
-import pytest
 
 from suitdyn import geometry
 
 
 def synthetic_disk(shape=(2048, 2048), x0=1280.3, y0=598.7, R=697.0, harm=((2, 6.0, 1.0), (3, -4.0, 5.0)), seed=0):
-    """Limb-darkened disk whose edge carries m=2,3 distortion, placed so the south limb is off the CCD,
-    like SUIT Level-1 NB03."""
+    """Limb-darkened disk whose edge carries m=2,3 distortion, placed so the south limb is off the CCD, like
+    SUIT Level-1 NB03.
+    """
     yy, xx = np.indices(shape, dtype=np.float64)
     phi = np.arctan2(yy - y0, xx - x0)
     redge = R + sum(a * np.cos(m * phi) + b * np.sin(m * phi) for m, a, b in harm)

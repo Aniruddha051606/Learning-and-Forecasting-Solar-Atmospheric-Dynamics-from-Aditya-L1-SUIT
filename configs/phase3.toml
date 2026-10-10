@@ -59,10 +59,15 @@ bf16 = true
 epoch_fraction = 0.25
 
 [thermal]
-# Duty-cycle controller (scripts/phase3_train.py, class Thermal). This laptop sustains ~6-10 % GPU duty.
-target_c = 75.0
-max_c = 85.0
-resume_c = 72.0
+# Duty-cycle controller (suitdyn/ml/thermal.py, class Thermal). enabled = false runs the GPU at full duty and only
+# logs its temperature. Unthrottled, the GPU reached 96 C in 19 s on 2026-10-09 (scripts/thermal_benchmark.py), so
+# the controller stays on. Target raised 75 -> 95 C at the user's request (2026-10-09, cooling upgraded 2026-10-08);
+# the hard stop is then 98 C (pause until 90 C). The GPU slows itself at 97 C and shuts down at 100 C. Operational
+# only: [thermal] is not part of any stage fingerprint (suitdyn/pipeline.py OPERATIONAL).
+enabled = true
+target_c = 95.0
+max_c = 98.0
+resume_c = 90.0
 
 [eval]
 # Regions: disk (r < 0.95), trusted (Phase 2 trusted region), plage. Plage is defined from the forecast

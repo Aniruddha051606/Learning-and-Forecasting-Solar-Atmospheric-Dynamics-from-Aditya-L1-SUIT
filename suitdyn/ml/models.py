@@ -1,21 +1,13 @@
-"""Small forecasters of the B1 residual. Output 0 everywhere reproduces baseline B1 exactly, so any skill
-is skill over rotation-corrected persistence.
-
-Inputs per sample: the K context frames, each already rotated to the target time (x[:, k]), their
-validity, the mu map and the horizon. Both models see the same information:
-  UNetSmall  frames as channels (differences to the last frame, the last frame, mask, mu, horizon)
-  ConvLSTM   frames as a sequence (per step: frame − last, mask, mu, horizon), stride-2 encoder, a
-             ConvLSTM cell over the K steps, decoder to the residual
-"""
+"""Small forecasters of the B1 residual."""
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 
 def features(x, mask, mu, horizon):
-    """x: (B, K, H, W) rotated context (NaN → 0 upstream), mask (B, 1, H, W), mu (1, 1, H, W),
-    horizon (B,) in frames. Returns channel stack for the U-Net: K−1 differences, last frame − 1, mask,
-    mu, horizon/160."""
+    """x: (B, K, H, W) rotated context (NaN → 0 upstream), mask (B, 1, H, W), mu (1, 1, H, W), horizon (B,)
+    in frames.
+    """
     last = x[:, -1:]
     diffs = (x[:, :-1] - last) * mask
     hmap = (horizon.float() / 160.0).view(-1, 1, 1, 1).expand_as(last)

@@ -1,14 +1,4 @@
-"""Phase 0 data audit of a SUIT Level-1 archive. Headers are read for every file; pixels only for a sample.
-
-Writes, under --out:
-  inventory.csv     one row per FITS file: time, filter, frame type, pointing, exposure, flags, calibration files
-  segments.csv      contiguous runs of the full-disk NB03 series (a gap longer than --max-gap-s ends a run)
-  pixel_sample.csv  per-frame pixel statistics for an evenly spaced sample of NB03 full-disk frames
-  audit.json        the summary numbers quoted in docs/DESIGN.md
-
-Usage:
-  python scripts/phase0_audit.py --root "D:/Data/pradan1.issdc.gov.in/al1/protected/downloadData/suit/level1" --out outputs/phase0
-"""
+"""Phase 0 data audit of a SUIT Level-1 archive."""
 import argparse
 import json
 import os

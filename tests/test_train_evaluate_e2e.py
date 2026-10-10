@@ -1,5 +1,6 @@
-"""End to end on the CPU: the real training and evaluation scripts on a tiny synthetic data set (64² frames with a
-planted static background). Catches wiring errors in phase3_train.py / phase3_evaluate.py before a long run."""
+"""End to end on the CPU: the real training and evaluation scripts on a tiny synthetic data set (64² frames
+with a planted static background).
+"""
 import importlib
 import json
 import sys

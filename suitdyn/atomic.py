@@ -1,9 +1,4 @@
-"""Crash-safe writes: write to a temporary file in the same folder, then rename over the target.
-
-A power cut or a killed process then leaves either the old file or the new one, never a half-written
-file that breaks the next run (the laptop has shut down under load once). os.replace is atomic on the
-same volume.
-"""
+"""Crash-safe writes: write to a temporary file in the same folder, then rename over the target."""
 import json
 import os
 from pathlib import Path

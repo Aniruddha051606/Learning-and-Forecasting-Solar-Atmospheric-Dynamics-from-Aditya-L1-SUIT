@@ -1,19 +1,6 @@
 """Phase 3: train one forecaster of the residual over B1 (plain or background-aware).
 
     python scripts/phase3_train.py --model unet --seed 0 [--inputs bg] [--epochs N] [--max-batches N]
-
-Settings: configs/phase3.toml [model], [train], [thermal]; command-line values override them (for tests).
-Samples are assembled on the fly from the frame cache (suitdyn/ml/data.py). Training uses the 'train' set,
-early stopping the 'holdout' run (masked L1 of the residual); 'val' and 'test' are never read.
-  inputs plain: context derotated as whole frames; target residual over B1
-  inputs bg:    context derotated as rot(F - S) + S with the static background S (phase3_background.py);
-                target residual over the background-aware B1, which no longer contains the artefact of
-                moving the non-rotating background with the Sun (PHASE3 §3.1, §4b, §4c)
-Loss: masked L1 on valid disk pixels. AdamW + OneCycle, bf16 autocast, gradient clipping.
-Writes outputs/datasets/<name>/phase3/runs/<model>_<inputs>_s<seed>/: best.pt, last.pt (resumable: model,
-optimiser, scheduler, RNG, log, early-stopping state; written atomically), log.csv, run.json (git state,
-config hashes, data provenance, parameters, timings, thermal log). A finished run is skipped.
-Thermal safety: suitdyn/ml/thermal.py, checked before every training and evaluation batch.
 """
 import argparse
 import hashlib
@@ -42,7 +29,7 @@ def masked_l1(pred_res, base, y, m):
 
 def run_batches(model, bank, ids, inputs, batch, th, train=False, opt=None, sched=None, clip=1.0, bf16=True,
                 report=None):
-    """One pass. Returns the masked-L1 of the residual (pixel-weighted mean over the pass)."""
+    """One pass."""
     model.train(train)
     tot, n = 0.0, 0.0
     ctx = torch.enable_grad() if train else torch.no_grad()
@@ -50,10 +37,11 @@ def run_batches(model, bank, ids, inputs, batch, th, train=False, opt=None, sche
         for bi, s in enumerate(range(0, len(ids), batch)):
             th.check()
             b = bank.batch(ids[s:s + batch], inputs)
-            x, m = data.model_inputs(b)
+            x, mi = data.model_inputs(b)
+            m = b["valid"].float()  # the loss mask: target and every context frame finite
             base = x[:, -1:]
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
-                r = model(x, m, bank.mu[None, None], b["h"]).float()
+                r = model(x, mi, bank.mu[None, None], b["h"]).float()
             loss = masked_l1(r, base, torch.nan_to_num(b["y"]), m)
             if train:
                 opt.zero_grad(set_to_none=True)
@@ -156,7 +144,7 @@ def main():
     atomic.to_parquet(pd.DataFrame(log), out / "log.parquet")
     pd.DataFrame(log).to_csv(out / "log.csv", index=False)
     run = {"name": name, "model": a.model, "seed": a.seed, "inputs": a.inputs, "params": models.n_params(model),
-           "args": vars(a), "train_cfg": T, "model_cfg": M, "best_epoch": best_ep, "best_holdout_l1": best,
+           "args": vars(a), "train_cfg": T, "model_cfg": M, "input_mask": "context", "best_epoch": best_ep, "best_holdout_l1": best,
            "b1_holdout_l1": b1_holdout, "best_holdout_skill_vs_B1": 1 - best / b1_holdout, "epochs_run": len(log),
            "checkpoint_sha256": hashlib.sha256((out / "best.pt").read_bytes()).hexdigest(),
            "background_sha256": hashlib.sha256(bg_file.read_bytes()).hexdigest() if a.inputs == "bg" else None,

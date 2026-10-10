@@ -1,16 +1,6 @@
 """Post-hoc test: an optical-flow advection baseline, scored with the models in the same windows and masks.
 
     python scripts/posthoc_flow_baseline.py --dataset final_offset [--device cpu] [--max-samples N] [--no-models]
-
-The strongest baseline so far (B1-avg-bgS) moves structure only by solar rotation. This baseline also moves it
-by the measured non-rotational motion: the dense optical flow (OpenCV Farneback) between the first and last
-background-aware derotated context frames, Gaussian-smoothed (flow_sigma_px) and capped (max_shift_px), is
-taken as a constant velocity and applied from the mean context time to the target time to B1-avg-bgS:
-    OF-adv = warp(B1-avg-bgS, -v * mean_k(dt_k))     v = flow(context_0 -> context_K-1) / (dt_0 - dt_K-1)
-Validation windows only (the sealed test is not read). The models (and seed ensembles) are re-run here in the
-same batches, so every method shares one mask; on a CPU they run in float32 (evaluation used bf16 on the GPU:
-differences are at rounding level). Regions and metrics: scripts/phase3_evaluate.py.
-Writes outputs/datasets/<name>/phase3/posthoc/flow_errors.parquet and flow_summary.csv.
 """
 import argparse
 import os

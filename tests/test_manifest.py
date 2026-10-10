@@ -15,8 +15,9 @@ def _write(path, t, flt="NB03"):
 
 
 def test_incremental_reuse_keeps_every_column(tmp_path):
-    """Rows reused from a previous manifest must keep all header columns, including names that are not
-    Python identifiers (DATE-OBS): losing them once removed the time of 11,837 rows."""
+    """Rows reused from a previous manifest must keep all header columns, including names that are not Python
+    identifiers (DATE-OBS): losing them once removed the time of 11,837 rows.
+    """
     for i in range(3):
         _write(tmp_path / f"SUT_T26_0001_000001_Lev1.0_2026-09-25T00.0{i}.00.000_0972NB03.fits",
                f"2026-09-25T00:0{i}:00")

@@ -1,14 +1,6 @@
 """Per-frame measurements for the Phase 1 audit, QC and registration study.
 
     python scripts/process_frames.py [--limit N]
-
-Reads <out>/manifest.parquet. For every full-disk frame: limb fits (distortion-aware and plain
-circle), artifact counts, seam step profiles, image statistics (global / disk / off-limb), and for
-consecutive NB03 binned frames the measured frame-to-frame image motion (phase correlation) plus a
-spike-persistence check. ROI frames get global statistics only; they are an operator-selected sample
-and are kept out of every disk-level analysis.
-
-Writes frames_full.parquet, frames_roi.parquet, seam_profiles.parquet and process_meta.json.
 """
 import argparse
 import json
@@ -30,9 +22,9 @@ MAX_PAIR_DT_S = 300
 
 
 def phase_motion(prev, cur, box):
-    """Image motion of `cur` relative to `prev` (px, +x/+y means features moved to larger x/y), from
-    phase correlation of high-passed crops of the same detector box. The box avoids the quadrant seam
-    and the limb, so the seam (fixed on the CCD) cannot pull the answer towards zero."""
+    """Image motion of `cur` relative to `prev` (px, +x/+y means features moved to larger x/y), from phase
+    correlation of high-passed crops of the same detector box.
+    """
     from skimage.registration import phase_cross_correlation
     y0, y1, x0, x1 = box
     out = []
@@ -197,8 +189,7 @@ def main():
             "R_SUN", "CROTA2", "RSUN_OBS", "DSUN_OBS", "clip_lo", "clip_hi", "sha256"]
 
     def save(res, roi_res):
-        """Earlier rows + everything finished so far, written atomically. Called every few minutes and at the
-        end, so a crash (or a killed run) loses at most a few minutes: the next run reuses the saved rows."""
+        """Earlier rows + everything finished so far, written atomically."""
         new = pd.DataFrame([r for r, _ in res]) if res else pd.DataFrame(columns=["file"])
         new_seams = pd.DataFrame([x for _, ss in res for x in ss])
         new = full[keep + ["prev_file"]].merge(new, on="file", how="inner").assign(proc_sig=sig)

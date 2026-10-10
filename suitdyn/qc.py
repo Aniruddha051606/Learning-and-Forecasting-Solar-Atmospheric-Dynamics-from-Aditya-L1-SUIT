@@ -1,10 +1,4 @@
-"""Scientific QC: per-pixel artifact mask and per-frame quality metrics.
-
-The Level-1 quality keywords (QVAL, QDESC, NSPIKES) are constant across the archive and carry no
-information (DESIGN §0), so they are kept as metadata only and never used to accept a frame.
-
-Pixel mask bits (uint8):
-"""
+"""Scientific QC: per-pixel artifact mask and per-frame quality metrics."""
 import numpy as np
 from scipy.ndimage import label, median_filter
 
@@ -18,11 +12,9 @@ BITS = {"clip_lo": CLIP_LO, "clip_hi": CLIP_HI, "spike": SPIKE, "seam": SEAM, "o
 
 
 def spikes(im, disk, k=10.0, rel=0.5, max_area=6, size=5):
-    """Isolated positive outliers: residual from a size×size median above k robust sigma (estimated on
-    the disk) and above `rel` times the local level, in connected groups of at most max_area pixels.
-
-    The area limit keeps small solar features (network grains are larger than a few 1.4″ pixels) out;
-    tests/test_qc.py and the temporal-persistence check in the registration study verify this."""
+    """Isolated positive outliers: residual from a size×size median above k robust sigma (estimated on the
+    disk) and above `rel` times the local level, in connected groups of at most max_area pixels.
+    """
     med = median_filter(im, size)
     res = im - med
     r = res[disk]
@@ -44,12 +36,7 @@ def seam_boundaries(shape, seam_px):
 
 
 def seam_profile(im, disk, c, axis, band=64, gap=(11, 5), width=6):
-    """Relative step across a boundary at index c, per band of `band` pixels along the boundary.
-
-    axis=1: vertical boundary between columns c-1 and c; axis=0: horizontal, between rows c-1 and c.
-    Compares the median of `width` pixels just after the boundary with the median of the pixels
-    c-gap[0]..c-gap[1] before it, skipping the bright strip found right before the boundary.
-    Returns (band centres, step ratios after/before - 1), NaN where the band is off the disk."""
+    """Relative step across a boundary at index c, per band of `band` pixels along the boundary."""
     a = im if axis == 1 else im.T
     m = disk if axis == 1 else disk.T
     lo, hi = c - gap[0], c - gap[1]

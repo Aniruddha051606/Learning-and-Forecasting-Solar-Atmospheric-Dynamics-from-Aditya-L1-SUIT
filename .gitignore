@@ -11,3 +11,14 @@ __pycache__/
 # dashboard build products (rebuilt by dashboard/build_exe.cmd)
 dashboard/build/
 dashboard/dist/
+
+# tool build products
+tools/**/build/
+tools/**/dist/
+
+# kept on this computer only: the unpublished paper and the personal handover guide
+/paper/
+/HANDOVER.md
+
+# images (the dashboard runs without them)
+dashboard/assets/

@@ -1,15 +1,4 @@
-"""First-order correction of the large-scale detector response seen through the pointing motion.
-
-In a registered frame the Sun is fixed and the detector moves under it: I(u) = S(u) · R(u + c), with c
-the frame's disk-centre position on the detector. The one-frame noise-floor study measures, per
-registered pixel, the slope of the B1 error against the pointing change between the two frames.
-Since the error ≈ (R(u+c_t) − R(u+c_t+1)) / R ≈ −∇ln R · Δc, the slope (in % per detector pixel) is
-−100 ∂ln R. Bringing every frame to a reference pointing c̄ therefore means multiplying by
-exp((s_x (c_x − c̄_x) + s_y (c_y − c̄_y)) / 100).
-
-The slope maps are estimated on the TRAINING split only and smoothed, so the correction never uses
-the frames it is judged on (scripts/phase2_response.py).
-"""
+"""First-order correction of the large-scale detector response seen through the pointing motion."""
 import json
 from pathlib import Path
 
@@ -46,8 +35,7 @@ def load(path):
 
 
 def factor(model, grid, x0, y0):
-    """Multiplicative correction for a frame at detector pointing (x0, y0), on a grid of size `grid`.
-    Pixels where the slope maps are undefined get factor 1."""
+    """Multiplicative correction for a frame at detector pointing (x0, y0), on a grid of size `grid`."""
     sx, sy = model["slope_x"], model["slope_y"]
     if sx.shape[0] != grid:
         idx = (np.arange(grid) * sx.shape[0] / grid).astype(int)

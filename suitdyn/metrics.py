@@ -1,6 +1,4 @@
-"""Forecast metrics on valid pixels only. Every metric takes (forecast, truth, mask); pixels where
-either image is NaN are excluded automatically. Nothing here is accuracy-like: all are errors or
-agreements of physical images."""
+"""Forecast metrics on valid pixels only."""
 import numpy as np
 from scipy.ndimage import gaussian_filter, sobel
 
@@ -59,8 +57,9 @@ def bright_region(img, mask, level):
 
 
 def region_scores(f, t, mask=None, level=1.3):
-    """Morphology of bright regions: IoU of the bright-pixel masks, relative error of their area and of
-    their integrated excess brightness."""
+    """Morphology of bright regions: IoU of the bright-pixel masks, relative error of their area and of their
+    integrated excess brightness.
+    """
     m = _m(f, t, mask)
     bf, bt = bright_region(f, m, level), bright_region(t, m, level)
     inter, union = (bf & bt).sum(), (bf | bt).sum()

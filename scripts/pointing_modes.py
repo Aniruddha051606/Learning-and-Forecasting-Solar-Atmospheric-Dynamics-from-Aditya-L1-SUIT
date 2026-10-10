@@ -1,14 +1,7 @@
-"""Which pointings are in the archive, day by day? Check before defining a data set.
+"""Which pointings are in the archive, day by day?
 
     python scripts/pointing_modes.py                          # from the archive manifest (indexed spans only)
     python scripts/pointing_modes.py --scan --from 2026-09-10 --to 2026-09-28   # read headers on the share
-
-The Level-1 large-scale response depends on where the Sun sits on the detector (PHASE3 §4b), so every data set
-should hold one pointing (build_sequences.py refuses to mix them silently). This lists, for NB03 binned full-disk
-frames, the pointing clusters (suitdyn.pointing.clusters on the header disk centre CRPIX1/CRPIX2, 2048-px units)
-with their frame counts and first/last time per day, and writes outputs/archive/pointing_modes.csv. Header
-centres are within ~10 px of the fitted limb centre, plenty to separate pointings hundreds of pixels apart.
-With --scan only headers are read (no checksums, no pixels).
 """
 import argparse
 import os

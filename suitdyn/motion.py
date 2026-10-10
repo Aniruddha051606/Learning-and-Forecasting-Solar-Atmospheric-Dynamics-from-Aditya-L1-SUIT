@@ -1,20 +1,10 @@
-"""Image-content motion between NB03 frames, with the detector's fixed pattern removed.
-
-Phase 1 findings (docs/PHASE1.md, Registration) that shape this module:
-  * Level-1 NB03 frames carry a pattern fixed on the CCD (residual flat field / PRNU / dust), rms
-    ~126 counts in the high-passed disk, reproducible between independent halves of the archive
-    (r = 0.98). Correlating two raw frames then peaks at zero shift whenever the true shift is
-    sub-pixel, which hides the real pointing jitter.
-  * The pattern is estimated as the median of high-passed crops of many frames in detector
-    coordinates: solar structure moves across the detector (rotation + pointing), the pattern does
-    not. It is subtracted before correlating.
-"""
+"""Image-content motion between NB03 frames, with the detector's fixed pattern removed."""
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from skimage.registration import phase_cross_correlation
 
-# Detector box (2048 frame) used for motion: inside the disk for all observed pointings, clear of the
-# vertical quadrant seam at x = 1024 and of the limb.
+# Detector box (2048 frame) used for motion: inside the disk for all observed pointings, clear of the vertical
+# quadrant seam at x = 1024 and of the limb.
 BOX = (300, 876, 1040, 1616)
 HIGHPASS_SIGMA = 15.0
 

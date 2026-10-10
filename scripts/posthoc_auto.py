@@ -1,14 +1,5 @@
 """Run the post-hoc tests automatically as the final run's evaluations finish (started hidden by
 outputs/logs/posthoc_auto.cmd; log outputs/tests/auto.log; progress outputs/tests/auto_state.json).
-
-    step                     waits for (pipeline state 'done')                 runs
-    offset_val               final_offset evaluate                             flow baseline (offset), report
-    offset_test              final_offset evaluate_test                        report
-    centred_val              final_centred evaluate                            flow baseline (centred), report
-    cross_mode               both data sets' evaluate                          cross-mode both ways, report
-    centred_test             final_centred evaluate_test                       report, then a buzzer chime
-Steps run once, in this order of readiness; finished steps are skipped after a restart. All tests run on the CPU
-at below-normal priority (the GPU stays with the run). Nothing here touches the pipeline's outputs or state.
 """
 import json
 import subprocess

@@ -1,13 +1,4 @@
-"""The one-time test evaluation guard.
-
-The test split is sealed (suitdyn.sequences): reading its windows needs unseal=True and a reason, the frame
-list must match the sealed hash, and every read is logged in the seal file. On top of that, the test
-EVALUATION is tied to the exact models evaluated: the first read records a fingerprint of the model set
-(every checkpoint's SHA-256 plus the learning and data-set config hashes). Reading again with the same
-models is harmless (same numbers) and allowed; reading with a different model set means the test split
-would start to steer choices, so it is refused unless explicitly overridden, and the override is recorded
-permanently in the log.
-"""
+"""The one-time test evaluation guard."""
 import hashlib
 import json
 import time
@@ -23,8 +14,7 @@ def models_fingerprint(runs, config_hashes):
 
 
 def authorize(record_path, fingerprint, allow_new_models=False):
-    """Raise PermissionError if the test split was already read with a different model set (unless allowed).
-    Returns whether this read changes the model set relative to the first read."""
+    """Raise PermissionError if the test split was already read with a different model set (unless allowed)."""
     p = Path(record_path)
     reads = json.loads(p.read_text())["reads"] if p.exists() else []
     if not reads:

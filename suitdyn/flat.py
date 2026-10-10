@@ -1,19 +1,4 @@
-"""Detector fixed-pattern estimation and correction for NB03 binned frames.
-
-Phase 1 found a pattern fixed on the detector (rms ~4 % of the disk level, network-like; PHASE1.md A4).
-It is estimated here from the frames themselves: each frame is divided by a smoothed version of itself,
-and the median of that relative residual is taken per detector pixel over many frames. Solar
-structure moves across the detector (rotation, the ±10 px pointing oscillation, jumps), so it
-averages out; the pattern does not.
-
-Two details keep other artefacts out of the estimate:
-  * the smoothing is a normalised convolution restricted to valid pixels (on the disk, not clipped,
-    not spikes) and never crosses a quadrant seam, so neither the limb nor the seam step leaks in;
-  * pixels are used only where they are well inside the disk (r < r_max) in that frame.
-
-Whether the pattern is multiplicative (flat-field-like) or additive is tested, not assumed
-(scripts/phase2_calibration.py): both are estimated on one half of the frames and judged on the other.
-"""
+"""Detector fixed-pattern estimation and correction for NB03 binned frames."""
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
@@ -21,8 +6,9 @@ from . import geometry, qc
 
 
 def seam_regions(shape, seam_px=1024):
-    """Label image of the regions separated by the quadrant boundaries (0..3); the smoothing never
-    mixes regions."""
+    """Label image of the regions separated by the quadrant boundaries (0..3); the smoothing never mixes
+    regions.
+    """
     c = int(seam_px * shape[0] / 2048)
     yy, xx = np.indices(shape)
     return (xx >= c).astype(np.int8) + 2 * (yy >= c).astype(np.int8)
@@ -56,11 +42,11 @@ def frame_residuals(im, fit, clip_lo, clip_hi, *, sigma=15.0, r_max=0.95, seam_p
 
 
 def nanmedian0(a):
-    """Median over axis 0 ignoring NaN, by sorting (NaN sorts last, so the median of the c finite values
-    sits at positions (c-1)//2 and c//2). Identical to np.nanmedian(a, 0) and ~25 % faster on
-    (440, 64, 512) float32 stacks with 30 % NaN."""
-    # sort along a contiguous axis: sorting along axis 0 of a C-ordered stack is strided and several
-    # times slower (the first full calibration pass took 76 min)
+    """Median over axis 0 ignoring NaN, by sorting (NaN sorts last, so the median of the c finite values sits
+    at positions (c-1)//2 and c//2).
+    """
+    # sort along a contiguous axis: sorting along axis 0 of a C-ordered stack is strided and several times
+    # slower (the first full calibration pass took 76 min)
     s = np.sort(np.ascontiguousarray(np.moveaxis(a, 0, -1)), axis=-1)
     c = np.isfinite(a).sum(0)
     lo = np.clip((c - 1) // 2, 0, a.shape[0] - 1)
@@ -86,7 +72,7 @@ def blockwise_nanmedian(stack_path, shape, n, rows=128):
 
 
 def correct(im, pattern, mode):
-    """Apply a pattern: 'multiplicative' divides by (1 + p), 'additive' subtracts p. NaN pattern = no change."""
+    """Apply a pattern: 'multiplicative' divides by (1 + p), 'additive' subtracts p."""
     p = np.nan_to_num(pattern, nan=0.0)
     if mode == "multiplicative":
         return im / (1.0 + p)

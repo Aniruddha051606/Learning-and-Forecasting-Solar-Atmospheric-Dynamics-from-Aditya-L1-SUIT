@@ -1,4 +1,4 @@
-from suitdyn.ml.thermal import Thermal
+from suitdyn.ml.thermal import Monitor, Thermal, controller
 
 
 class Clock:
@@ -46,3 +46,15 @@ def test_hard_stop_pauses_until_cool_and_halves_duty():
     assert synced and th.d == 0.2
     stats = th.reset()
     assert stats["gpu_temp_peak"] == 90.0 and stats["thermal_pause_s"] == 15.0
+
+
+def test_disabled_controller_never_sleeps_but_logs_temperature():
+    assert isinstance(controller({"enabled": False, "max_c": 90, "resume_c": 72, "target_c": 75}, "cuda"), Monitor)
+    assert isinstance(controller({"max_c": 90, "resume_c": 72, "target_c": 75}, "cuda"), Thermal)
+    temps = iter([99.0, 80.0])
+    m = Monitor(sensor=lambda: next(temps))
+    m.check()
+    m.check()
+    assert m.d == 1.0
+    stats = m.reset()
+    assert stats["gpu_temp_peak"] == 99.0 and stats["thermal_pause_s"] == 0.0 and stats["throttle_sleep_s"] == 0.0

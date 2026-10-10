@@ -1,13 +1,6 @@
-"""How fast can this laptop train without overheating? A before/after test for cooling changes.
+"""How fast can this laptop train without overheating?
 
     python scripts/thermal_benchmark.py [--minutes 5] [--note "cooling pad, max fan"]
-
-Runs the real training workload (UNetSmall forward + backward on 384² batches of 8, bf16) under the same
-duty-cycle thermal controller the pipeline uses (configs/phase3.toml [thermal]) and reports what it can
-sustain: mean duty, mean and peak GPU temperature, batches per minute, and the implied time per 1,000
-training batches. Every result is appended to outputs/logs/thermal_benchmark.jsonl with the note, so the
-effect of each change (cooling pad, raised rear, fan mode, AC power, clean vents, GPU clock cap) can be
-compared. The first minute is a warm-up and is not counted. Needs the GPU; do not run next to training.
 """
 import argparse
 import json
@@ -29,6 +22,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float, default=5.0)
     ap.add_argument("--note", default="")
+    ap.add_argument("--abort-c", type=float, default=95.0, help="stop the test if the GPU reaches this temperature")
     a = ap.parse_args()
     if not torch.cuda.is_available():
         sys.exit("needs a CUDA GPU")
@@ -40,11 +34,15 @@ def main():
     mu = torch.rand(1, 1, G, G, device="cuda")
     h = torch.full((B,), 40, device="cuda")
     y = torch.rand(B, 1, G, G, device="cuda")
-    th = thermal.Thermal(TH["max_c"], TH["resume_c"], TH["target_c"], sync=torch.cuda.synchronize)
+    th = thermal.controller(TH, "cuda", sync=torch.cuda.synchronize)
     t_start, t_end = time.time(), time.time() + 60 * (a.minutes + 1)
-    counted, warm = 0, True
+    counted, warm, aborted, t_count = 0, True, None, time.time()
     while time.time() < t_end:
         th.check()
+        if thermal.gpu_temp() >= a.abort_c:
+            aborted = f"GPU reached {thermal.gpu_temp():.0f} C after {time.time() - t_start:.0f} s"
+            print("ABORTED: " + aborted, flush=True)
+            break
         with torch.autocast("cuda", dtype=torch.bfloat16):
             r = model(x, m, mu, h).float()
         loss = (r - y).abs().mean()
@@ -61,14 +59,14 @@ def main():
                         f"duty {th.d:.2f}", i=int(time.time() - t_start), n=int(t_end - t_start))
     stats = th.reset()
     minutes = (time.time() - t_count) / 60
-    rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "note": a.note, "minutes_measured": round(minutes, 2),
+    rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "note": a.note, "aborted": aborted, "minutes_measured": round(minutes, 2),
            "batches_per_min": round(counted / minutes, 1), "minutes_per_1000_batches": round(1000 * minutes / max(counted, 1), 1),
            **stats, "gpu": torch.cuda.get_device_name(0), "thermal_cfg": TH, **config.load()["_meta"]}
     log = paths.OUT / "logs" / "thermal_benchmark.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, default=str) + "\n")
-    print(json.dumps({k: rec[k] for k in ("note", "batches_per_min", "minutes_per_1000_batches", "duty_mean",
+    print(json.dumps({k: rec[k] for k in ("note", "aborted", "batches_per_min", "minutes_per_1000_batches", "duty_mean",
                                          "gpu_temp_mean", "gpu_temp_peak", "thermal_pause_s")}, indent=1))
     prev = [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines()[:-1] if ln.strip()]
     if prev:

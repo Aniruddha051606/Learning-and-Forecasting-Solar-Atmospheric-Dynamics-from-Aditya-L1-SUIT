@@ -14,9 +14,7 @@ G, R_REF, B0, CAD = 64, 28.75, 7.0, 87.0 * 40  # 40 "frames" per step so rotatio
 
 
 def _synthetic_cache(tmp_path, S_true, n_runs=6, run_len=16, seed=0):
-    """Frames = a solar field rotating with the Sun + a static background S_true fixed on the grid. Each
-    observing run has its own solar field (real solar structure changes over days; a single rigid pattern
-    would leave interpolation residuals that never average out). Runs 0..n-2: train, the last: hold-out."""
+    """Frames = a solar field rotating with the Sun + a static background S_true fixed on the grid."""
     rng = np.random.default_rng(seed)
     c = (G - 1) / 2
     v, u = np.indices((G, G))

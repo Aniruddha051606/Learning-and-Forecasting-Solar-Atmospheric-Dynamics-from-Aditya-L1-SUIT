@@ -1,22 +1,6 @@
 """Phase 2, step 2: nature of the NB03 vertical quadrant seam (PHASE1.md A5).
 
     python scripts/phase2_seam.py [--frames 240]
-
-The step across x = 1023|1024 (binned) reaches −28 % in the southern rows. Two hypotheses need
-opposite corrections:
-  H_half   the whole region right of the seam (or left of it) has a different gain, varying with row
-           → rescale that whole side;
-  H_local  the error is confined near the boundary → only a local correction is right; rescaling a
-           whole side would create an error far from the seam.
-Test: east-west symmetry of the quiet Sun. For each detector point left of the seam, its mirror
-about the disk centre (same row, same distance from centre) lies far right of the seam. The median,
-over many frames, of I(mirror)/I(point) as a function of row and of the point's distance d from the
-seam is flat in d under H_half and returns to 1 away from the seam under H_local. Medians over frames
-spanning several days of rotation suppress individual active regions; the ratio is also taken
-within each frame and then the median over frames, so program-level brightness steps cancel.
-
-Also measured: the step itself across the seam, from the same frames after the fixed-pattern
-correction (it should be unchanged: the pattern estimate never smooths across the seam).
 """
 import argparse
 import json
@@ -94,7 +78,6 @@ def main():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         med = np.nanmedian(ratios, 0)
-        q = np.nanpercentile(ratios, [25, 75], axis=0)
         step_med = np.nanmedian(steps, 0)
     rowc = (ROW_BINS[:-1] + ROW_BINS[1:]) / 2
     dc = (D_BINS[:-1] + D_BINS[1:]) / 2

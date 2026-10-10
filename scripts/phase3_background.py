@@ -1,13 +1,6 @@
 """Phase 3: the static background S of one data set (suitdyn/ml/background.py).
 
     python scripts/phase3_background.py [--device cuda]
-
-1. M(H) from the TRAIN pairs; for each lambda in configs/phase3.toml [background] lambdas, S is solved and
-   scored on the HOLD-OUT run (median MAE of B1-avg-bgS vs B1-avg per horizon); the lambda with the largest
-   mean gain is chosen. Validation is never used.
-2. S is solved again from train + hold-out pairs with that lambda and saved.
-Writes outputs/datasets/<name>/phase3/background/: static_bg_<G>.npz (S, the M(H) maps of train + hold-out,
-the limb-darkening profile), background_meta.json (lambda scan, fit, geometry, provenance), background.png.
 """
 import argparse
 import json
@@ -32,7 +25,8 @@ P3 = config.load_phase3()
 
 def ld_profile(bank, ids, n_bins=30):
     """Centre-to-limb profile q(mu): per frame the median of each mu annulus (r < 0.95), median over frames
-    (no brightness window: PHASE3 §3.2)."""
+    (no brightness window: PHASE3 §3.2).
+    """
     mu = bank.mu.cpu().numpy()
     edges = np.linspace(np.sqrt(1 - 0.95 ** 2), 1.0, n_bins + 1)
     b = np.digitize(mu, edges)
@@ -57,9 +51,8 @@ def main():
     G, r_ref = bank.G, bank.r_ref
     pos = bgm.disk_index(G, r_ref, B["rho_max"])
     train, ho = bank.ids("train"), bank.ids("holdout")
-    TH = P3["thermal"]
-    th = thermal.Thermal(TH["max_c"], TH["resume_c"], TH["target_c"]) if a.device.startswith("cuda") else None
-    tick = th.check if th else None
+    th = thermal.controller(P3["thermal"], a.device)
+    tick = th.check if a.device.startswith("cuda") else None
 
     rep = lambda stage: (lambda i, n: progress.report(stage, item=f"sample {i}", i=i, n=n))  # noqa: E731
     M_tr, geo_tr = bgm.mean_residuals(bank, train, B["residual_clip"], report=rep("background: M(H) train"), tick=tick)
@@ -77,10 +70,7 @@ def main():
 
     both = np.concatenate([train, ho])
 
-    # Pointing groups. The detector background (vignetting, seams) is fixed on the CCD and moves across the
-    # registered grid when the pointing drifts, so over many days one S smears. Samples are grouped by their
-    # target's pointing; each group gets its own S, pulled toward the common S (shrinkage) so small groups stay
-    # stable. Grouping is kept only if it beats the single S on the hold-out run (groups fitted on train only).
+    # Pointing groups.
     def group_maps(ids_all, groups, prior):
         maps = []
         for gi in range(groups.max() + 1):

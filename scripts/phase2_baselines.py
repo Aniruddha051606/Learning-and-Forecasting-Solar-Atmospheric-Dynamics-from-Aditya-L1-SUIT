@@ -1,20 +1,6 @@
 """Phase 2: noise floor, baselines B0/B1/B2 across horizons, under each normalisation variant.
 
     python scripts/phase2_baselines.py --store v0 [--split val] [--per-horizon 120] [--grid-factor 1]
-
-For each horizon H (frames) windows are drawn from the chosen split (never the sealed test split),
-spread evenly over time. For each window: F(t-1), F(t) and the truth F(t+H) are read from the store;
-pixels with any QC bit (seam, edge, off-limb, spike, clipped, no source) are invalid. Forecasts:
-  B0 = F(t);  B1 = F(t) rotated by solar differential rotation over the true elapsed time;
-  B2 = B1 plus the residual flow between F(t-1) and F(t), extrapolated.
-Every normalisation variant is applied to all three images before scoring, so the variants are
-compared on identical windows. Scores are on the valid disk (r < 0.9 of r_ref) and reported as
-relative MAE (MAE / median truth level), SSIM, gradient correlation and bright-region scores.
-Confidence intervals: bootstrap over runs × hour blocks (windows in the same hour are not independent).
-
-Also written, per variant: how much of the true change in bright-region excess brightness between t
-and t+H survives normalisation ("signal retained"), and the correlation of the frame level with
-pointing (instrument leakage).
 """
 import argparse
 import json
@@ -201,9 +187,8 @@ def main():
     sig = res[res.baseline == "signal"].copy()
     sig["d_excess"] = sig.excess_truth - sig.excess_last
     sig["d_level"] = sig.level_truth / sig.level_last - 1
-    # signal retained: per horizon, correlation over windows between a variant's change of bright-region
-    # excess and the change in the global (un-rescaled) variant. Units differ between variants, so a
-    # correlation (does the variant keep the same pattern of solar change?) is the comparable quantity.
+    # signal retained: per horizon, correlation over windows between a variant's change of bright-region excess
+    # and the change in the global (un-rescaled) variant.
     wide = sig.pivot_table(index=["horizon", "last"], columns="variant", values="d_excess")
     rows_r = []
     for h, d in wide.groupby(level=0):

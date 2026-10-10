@@ -1,10 +1,6 @@
 """Phase 1 exploratory analysis: per-filter audit tables and diagnostic plots.
 
     python scripts/eda.py
-
-Reads manifest.parquet, frames_full.parquet, frames_roi.parquet, seam_profiles.parquet (and
-registration.parquet if present) from <out>; writes <out>/eda/*.png and <out>/audit_filters.csv.
-No image is read except for the sample-frame and filter-comparison figures.
 """
 import sys
 from pathlib import Path

@@ -1,18 +1,6 @@
 """Phase 3 data preparation: the frame cache and the sample index of one data set.
 
     python scripts/phase3_prepare.py
-
-Settings: configs/phase3.toml [samples]. Writes outputs/datasets/<name>/phase3/cache/:
-  frames_<G>.npy        every store frame once (float16, NaN = invalid): QC-masked, block-averaged to
-                        G = 1536 / grid_factor, pointing-response corrected (PHASE2 §4.2), divided by its
-                        own disk median (PHASE2 §4.3)
-  samples_<G>.parquet   one row per window (context K, horizon H): set, horizon, run, ctx (K frame indices),
-                        tgt (target frame index), dt_context_s (K elapsed seconds to the target), b0, times.
-                        Sets: train = training runs except the last; holdout = the last training run
-                        (early stopping and baseline tuning only); val = validation. The sealed test split
-                        is not read here.
-  mu_<G>.npy, trusted_<G>.npy (the Phase 2 trusted region, resized), prepare_meta.json (provenance)
-Samples are assembled on the fly (suitdyn/ml/data.py); no sample array is stored.
 """
 import hashlib
 import sys
@@ -67,7 +55,7 @@ def main():
     resp_path = paths.phase2("response", f"response_{name}.npz")
     pointing = {int(r.store_index): (float(r.reg_x0), float(r.reg_y0)) for r in fr.itertuples()}
 
-    # 1. frame cache
+    # 1.
     frames = np.full((len(fr), G, G), np.nan, np.float16)
     fid = fr.set_index("store_index").frame_id
     with ProcessPoolExecutor(CFG["run"]["workers"], initializer=_init,
@@ -79,7 +67,7 @@ def main():
     atomic.save_npy(out / f"frames_{G}.npy", frames)
     print(f"frame cache {frames.shape} ({time.time() - t0:.0f} s)", flush=True)
 
-    # 2. sample index
+    # 2.
     seqf = pd.read_parquet(paths.sequences("frames.parquet"))
     man = pd.read_parquet(paths.archive("manifest.parquet"), columns=["file", "HGLT_OBS"]).set_index("file")
     win = pd.read_parquet(paths.sequences("windows.parquet"))

@@ -1,12 +1,6 @@
 """Check that every raw frame of a data set is present, byte-identical, in the current raw archive.
 
     python scripts/verify_dataset.py [--dataset outputs/phase2/sequences/frames.parquet]
-
-Compares the data set's frame list (file name + SHA-256 recorded when it was built) with the current
-manifest (outputs/phase1/manifest.parquet, rebuilt from raw_root = the network share). Reports, per
-split and overall: identical, different content (same name, other SHA-256), missing. Nothing is read
-from the archive here: the manifest already holds the checksums. A data set is reproducible from the
-share only when every frame is identical; until then the local copy (local_copy_root) is kept.
 """
 import argparse
 import json

@@ -1,13 +1,4 @@
-"""Live progress heartbeats for the desktop dashboard (dashboard/suitdyn_dashboard.py).
-
-A pipeline loop calls report(stage, item=..., i=..., n=..., path=...) once per unit of work. At most
-every `every_s` seconds (and always on the last item) the call writes the latest state of this process
-to outputs/logs/progress/<pid>.json (atomic replace) and appends it to history.jsonl. Only the main
-process of a script reports, never pool workers, so there is one writer per file.
-
-It never raises and never slows a run: any error (full disk, locked file) is swallowed. The dashboard
-is a viewer; the pipeline must behave the same with or without it.
-"""
+"""Live progress heartbeats for the desktop dashboard (dashboard/suitdyn_dashboard.py)."""
 import json
 import os
 import time

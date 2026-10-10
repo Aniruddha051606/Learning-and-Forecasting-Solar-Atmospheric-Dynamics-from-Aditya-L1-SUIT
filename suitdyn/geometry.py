@@ -1,27 +1,11 @@
-"""Solar-limb fitting, independent of the header pointing.
-
-Level-1 SUIT limbs are not circles: the edge departs from the best circle by a systematic ±5-10 px
-(2048 frame) pattern in position angle, from optical distortion that is only corrected at Level 2
-(DESIGN §0; Sarkar et al. 2025). The fit therefore models the edge as
-
-    r(φ) = R + Σ_{m=2..M} a_m cos(mφ) + b_m sin(mφ)
-
-around a centre (x0, y0). m = 1 is left out because it is the same as moving the centre. With the
-harmonics absorbing the distortion, the centre is no longer pulled around by which part of the limb
-happens to be on the detector, which changes as the pointing drifts.
-"""
+"""Solar-limb fitting, independent of the header pointing."""
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.optimize import least_squares
 
 
 def edge_points(im, cx, cy, R, rays=720, window=0.07, smooth_px=2.0, edge_margin_px=40, valid=None):
-    """Steepest intensity drop along each ray from a guessed centre, with sub-pixel refinement.
-
-    Returns angles, edge x, edge y, and which rays are usable: the search window lies on the
-    detector, away from the vignetted CCD margin, and (if `valid` is given) only on valid pixels.
-    Without the validity check, the straight edge where the disk leaves the detector is found as
-    "limb" by oblique rays and pulls the centre by tens of pixels."""
+    """Steepest intensity drop along each ray from a guessed centre, with sub-pixel refinement."""
     if valid is None:
         valid = np.isfinite(im)
     im = np.where(valid, im, np.nanmedian(im[valid]) if valid.any() else 0.0)
@@ -57,11 +41,7 @@ def _residuals(p, x, y, harmonics):
 
 
 def fit_limb(x, y, harmonics=4, clip_sigma=3.0, iters=8):
-    """Robust joint least-squares fit of centre, mean radius and distortion harmonics to edge points.
-
-    The centre and the harmonics must be fitted jointly: fitted alternately they trade off against
-    each other over a partial limb and the centre ends up several pixels off (tests/test_geometry.py).
-    Points beyond clip_sigma robust sigma are rejected and the fit repeated."""
+    """Robust joint least-squares fit of centre, mean radius and distortion harmonics to edge points."""
     A = np.c_[2 * x, 2 * y, np.ones(len(x))]
     x0, y0, k = np.linalg.lstsq(A, x ** 2 + y ** 2, rcond=None)[0]
     p = np.r_[x0, y0, np.sqrt(k + x0 ** 2 + y0 ** 2), np.zeros(2 * max(harmonics - 1, 0))]
@@ -83,10 +63,7 @@ def fit_limb(x, y, harmonics=4, clip_sigma=3.0, iters=8):
 
 def limb(im, cx, cy, R, *, rays=720, window=0.07, smooth_px=2.0, edge_margin_px=40, harmonics=4, clip_sigma=3.0,
          scale=1.0, valid=None):
-    """Edge detection plus fits, from a header guess. `scale` = 1 for 2048 frames, 2 for 4096.
-
-    Returns the harmonic fit ('limb') and a plain circle fit ('circle', harmonics = 0) of the same
-    edge points, so the two can be compared."""
+    """Edge detection plus fits, from a header guess."""
     th, ex, ey, usable = edge_points(im, cx, cy, R, rays, window, smooth_px * scale, edge_margin_px * scale, valid)
     x, y = ex[usable], ey[usable]
     if len(x) < 50:
@@ -108,8 +85,9 @@ def disk_radius_map(shape, x0, y0, R):
 
 
 def r_map_model(shape, fit):
-    """Distance from the fitted centre in units of the fitted (distorted) limb radius at that angle,
-    so r = 1 lies on the measured limb everywhere."""
+    """Distance from the fitted centre in units of the fitted (distorted) limb radius at that angle, so r = 1
+    lies on the measured limb everywhere.
+    """
     yy, xx = np.indices(shape, dtype=np.float32)
     dx, dy = xx - fit["x0"], yy - fit["y0"]
     phi = np.arctan2(dy, dx)

@@ -1,12 +1,4 @@
-"""Derotation on the GPU: the torch counterpart of suitdyn.baselines.derotation_coords / rotated_persistence.
-
-The registered grid is disk-centred (radius r_ref, solar north up, +x = west) and the Sun is a sphere seen
-orthographically. For every pixel of the TARGET frame, its heliographic latitude/longitude is found, the
-longitude is moved back by the synodic rotation over dt (Snodgrass & Ulrich 1990, suitdyn.solar), and the
-position of that point in the SOURCE frame is where the pixel is sampled (bilinear). Pixels whose source was
-behind the limb, or invalid (NaN) in the source (nearest source pixel), are NaN, exactly as in the numpy
-version (tests/test_ml_geometry.py checks the two agree).
-"""
+"""Derotation on the GPU: the torch counterpart of suitdyn.baselines.derotation_coords / rotated_persistence."""
 import math
 
 import torch
@@ -29,9 +21,7 @@ def _base(G, r_ref, device):
 
 
 def derotation_grid(G, r_ref, b0_deg, dt_s, rate_offset=None):
-    """b0_deg: (B,) tensor, dt_s: (B, K) tensor of seconds (target time minus source time).
-    Returns grid (B*K, G, G, 2) for F.grid_sample(align_corners=True) and ok (B, K, G, G): the source point
-    is on the visible disk."""
+    """b0_deg: (B,) tensor, dt_s: (B, K) tensor of seconds (target time minus source time)."""
     dev = dt_s.device
     B, K = dt_s.shape
     x, y, z, off = _base(G, r_ref, dev)

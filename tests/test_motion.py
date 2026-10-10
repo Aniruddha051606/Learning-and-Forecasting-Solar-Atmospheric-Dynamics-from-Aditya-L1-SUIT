@@ -5,8 +5,9 @@ from suitdyn import motion
 
 
 def test_fixed_pattern_removal_recovers_subpixel_shift():
-    """A scene moving by 0.3 px over a strong fixed pattern: raw correlation locks near 0, with the
-    pattern removed the shift is recovered (the Phase 1 failure mode, reproduced)."""
+    """A scene moving by 0.3 px over a strong fixed pattern: raw correlation locks near 0, with the pattern
+    removed the shift is recovered (the Phase 1 failure mode, reproduced).
+    """
     rng = np.random.default_rng(0)
     H, W = 1200, 2048
     scene = gaussian_filter(rng.normal(0, 1, (H, W)), 3) * 3000 + 3000

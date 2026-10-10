@@ -1,11 +1,4 @@
-"""The sample index: one row per (context, horizon) window, pointing into the frame cache.
-
-Shared by scripts/phase3_prepare.py (train / hold-out / val) and the one-time test evaluation
-(scripts/phase3_evaluate.py --split test), so test samples are built exactly like the others.
-Columns: set, horizon, run, ctx (K frame-cache indices), tgt, dt_context_s (K elapsed seconds from each
-context frame to the target), b0 (target B0), t_last, t_target, dt_target_s, target_frame, and the target's
-pointing px, py (disk centre on the detector, 2048-px units: the static detector background moves with it).
-"""
+"""The sample index: one row per (context, horizon) window, pointing into the frame cache."""
 import numpy as np
 import pandas as pd
 
@@ -13,7 +6,8 @@ import pandas as pd
 def build(win, seqf, store_frames, man_b0, set_labels):
     """win: windows (one context length) with columns first, last, target, horizon; seqf: the data set's
     frame list (positions used by the windows); store_frames: store frame table (frame_id, store_index,
-    reg_x0, reg_y0); man_b0: Series file -> HGLT_OBS; set_labels: one label per window row."""
+    reg_x0, reg_y0); man_b0: Series file -> HGLT_OBS; set_labels: one label per window row.
+    """
     win = win.reset_index(drop=True)
     pos2store = pd.Series(store_frames.store_index.values, index=store_frames.frame_id).reindex(seqf.frame_id).values
     if np.isnan(pos2store.astype(float)).any():
@@ -40,7 +34,8 @@ def build(win, seqf, store_frames, man_b0, set_labels):
 
 def embargo_before(idx, later_set, earlier_set, hours):
     """Drop rows of `earlier_set` whose TARGET is within `hours` before the first context frame of any
-    `later_set` row (the hold-out run must not be predicted from almost the same solar state it contains)."""
+    `later_set` row (the hold-out run must not be predicted from almost the same solar state it contains).
+    """
     later = idx[idx.set == later_set]
     if not len(later) or hours <= 0:
         return idx

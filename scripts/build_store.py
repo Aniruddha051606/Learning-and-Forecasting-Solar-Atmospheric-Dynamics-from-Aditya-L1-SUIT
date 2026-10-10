@@ -1,12 +1,6 @@
 """Phase 2: build a training store (Zarr) of calibrated, registered NB03 frames.
 
     python scripts/build_store.py --name v0 [--grid 1536] [--pattern PATH|none] [--splits train,val,test]
-
-Frames and splits come from outputs/phase2/sequences/frames.parquet. The store is written to
-outputs/phase2/stores/<name>.zarr with <name>.frames.parquet (row i = store index i) and a
-provenance record: git commit, config hashes, manifest hash, calibration file hashes, test seal.
-Each worker writes its own frames (one chunk per frame), so the build is parallel and resumable
-(--resume skips frames already written).
 """
 import argparse
 import json

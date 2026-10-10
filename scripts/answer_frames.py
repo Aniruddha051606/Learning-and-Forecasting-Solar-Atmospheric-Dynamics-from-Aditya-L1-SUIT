@@ -1,22 +1,6 @@
 """Answer frames for scoring the sealed blind forecasts (docs/PREREGISTRATION.md, Addendum B; test D3).
 
     python scripts/answer_frames.py --sealed outputs/sealed_forecast/<UTC time> [--workers 4]
-
-For every sealed target time, the real NB03 full-disk 2048 frame nearest in time (within +-2 min) is processed like
-the final_offset frame cache, with the FROZEN final_offset products:
-  registration  the pipeline's method (scripts/registration_study.py adopt_nb03), re-run on every 2048 NB03 frame
-                from 2026-09-27 03:00 to the last target: per-frame limb edges from the header guess
-                (suitdyn.geometry.limb, [limb] settings, as scripts/process_frames.py), circle fits on the rays
-                usable in >= 98 % of these frames, runs (gaps > 300 s) and jumps (> 1 px, phase correlation of
-                consecutive frames), image motion with the fixed pattern removed (suitdyn.motion, keyframes every
-                10 frames, solar rotation removed), each segment anchored to its circle fits, radius = robust
-                segment mean scaled by DSUN_OBS
-  store + cache suitdyn.store.process (QC mask, final_offset additive fixed pattern, exposure, 1536 grid, r_ref
-                690); block-averaged to 384; final_offset pointing-response factor; divided by its own disk median
-VALIDATION (always): the window starts inside final_offset's last observing stretch, so the same frames registered
-here and by the pipeline are compared (reg_x0/y0/R), and frames built here are compared with the cache.
-Writes outputs/sealed_forecast/answers_<sealed name>/. Reads raw files only; the pipeline's archive, manifest,
-stores and state are not touched.
 """
 import argparse
 import json

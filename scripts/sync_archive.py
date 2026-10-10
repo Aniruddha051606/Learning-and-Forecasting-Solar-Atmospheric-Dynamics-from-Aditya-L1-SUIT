@@ -2,16 +2,6 @@
 
     python scripts/sync_archive.py            # dry run: lists what would be copied, writes nothing
     python scripts/sync_archive.py --copy     # copy new/changed files, verify each by SHA-256
-
-Rules:
-  * the share is read-only for this script; nothing is ever deleted or modified on either side;
-  * only complete files are copied: *.fits.part (downloads in progress) and files modified in the last
-    --settle-s seconds are skipped until a later run;
-  * a file is copied when it is missing locally or its size differs; the copy is written to a temporary
-    name, checksummed against the source and renamed only if the hashes match;
-  * every run appends to outputs/sync/sync_log.jsonl (what was copied, bytes, rate, mismatches).
-Paths come from configs/phase1.toml: [paths] archive_root (the share, forward slashes) and raw_root.
-The local copy keeps the PRADAN layout, so the incremental manifest and frame processing pick new files up.
 """
 import argparse
 import hashlib

@@ -1,9 +1,4 @@
-"""Normalisation variants for registered NB03 frames (the Phase 2 experiment compares them).
-
-All take a registered frame (NaN = invalid) and a disk mask (valid on-disk pixels, r < 0.9 by default)
-and return an image in the variant's units. NB03 is a single filter, so "per-filter" normalisation is
-the same as "global" here; it matters only for Pipeline B.
-"""
+"""Normalisation variants for registered NB03 frames (the Phase 2 experiment compares them)."""
 import numpy as np
 
 from . import baselines
@@ -29,8 +24,9 @@ def mu_map(grid, r_ref):
 
 
 def quiet_sun_contrast(img, disk, level=None, mu=None, n_bins=20, bright=1.3):
-    """Divide by the quiet-Sun centre-to-limb profile of this frame: median in μ bins after removing
-    bright (plage) pixels, interpolated in μ. The result is contrast: 1 = quiet Sun at that μ."""
+    """Divide by the quiet-Sun centre-to-limb profile of this frame: median in μ bins after removing bright
+    (plage) pixels, interpolated in μ.
+    """
     edges = np.linspace(mu[disk].min(), 1.0, n_bins + 1)
     centres, prof = [], []
     for a, b in zip(edges[:-1], edges[1:]):

@@ -1,22 +1,6 @@
 """Phase 2 calibration follow-up: three checks the first study could not settle (docs/PHASE2.md §2).
 
     python scripts/phase2_calibration_followup.py
-
-Uses the residual cache written by phase2_calibration.py (outputs/phase1/cache), restricted to a
-detector band seen on the disk in both pointing modes (rows 352-1248, cols 600-1700).
-
-C1  Which spatial scales are a detector pattern? Pattern estimates from independent subsets (early
-    days vs last day; offset vs centred pointing) are compared after high-passing at several scales.
-    A detector pattern agrees between subsets at every scale where it is estimated well; solar
-    leakage (active regions that did not move far enough) does not.
-C2  Multiplicative or additive, with a lever arm: per pixel, frames where plage covers it (local
-    level > 1.3x its median) vs quiet frames (below median). With k = level ratio plage/quiet:
-    multiplicative -> |relative residual| same in both, |absolute| scales by k; additive -> the reverse.
-    The noise inflation of the (fewer) plage frames is measured on pixels with no pattern and divided
-    out. The first study compared slopes of two noisy estimates, which cannot separate the cases.
-C3  Rotation test on the longest OFFSET-mode run (the first used a run containing the pointing slew):
-    plain phase correlation of consecutive frames, uncorrected / additive / multiplicative /
-    high-passed pattern; median x-motion should equal the predicted rotation, ~0.17 px per frame.
 """
 import json
 import sys
@@ -162,8 +146,7 @@ def main():
           "relative_corrected": a_rel / b_rel, "absolute_corrected": a_abs / b_abs,
           "expected_multiplicative": {"relative_corrected": 1.0, "absolute_corrected": k_ratio},
           "expected_additive": {"relative_corrected": 1 / k_ratio, "absolute_corrected": 1.0}}
-    # Decision on the raw amplitude ratios. The "noise control" above divides by near-zero medians of
-    # noise-dominated pixels and is kept only as a diagnostic (docs/PHASE2.md §2).
+    # Decision on the raw amplitude ratios.
     d_mult = abs(np.log(a_rel)) + abs(np.log(a_abs / k_ratio))
     d_add = abs(np.log(a_rel * k_ratio)) + abs(np.log(a_abs))
     c2["log_distance_to_multiplicative"] = float(d_mult)

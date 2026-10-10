@@ -1,12 +1,4 @@
-"""Forecast baselines on the registered grid (disk centred, radius r_ref, solar north up, +x = west).
-
-B0 persistence:                  F(t+Δ) = F(t)
-B1 rotation-corrected persistence: F(t) moved by solar differential rotation over Δ
-B2 optical-flow extrapolation:   B1 plus the residual motion measured between the two most recent
-                                 frames (after derotation), extrapolated linearly over Δ
-The disk is treated as a sphere seen orthographically (the perspective correction at L1 is ~0.3° at
-the limb and is neglected); pixels that were not on the visible disk at t are invalid (NaN).
-"""
+"""Forecast baselines on the registered grid (disk centred, radius r_ref, solar north up, +x = west)."""
 import numpy as np
 from scipy.ndimage import map_coordinates
 
@@ -20,8 +12,9 @@ def _unit(grid, r_ref):
 
 
 def heliographic(grid, r_ref, b0_deg):
-    """Latitude and longitude (radians, longitude from the central meridian, + west) of every pixel;
-    NaN off the disk."""
+    """Latitude and longitude (radians, longitude from the central meridian, + west) of every pixel; NaN off
+    the disk.
+    """
     x, y, _ = _unit(grid, r_ref)
     rho2 = x ** 2 + y ** 2
     z = np.sqrt(np.clip(1 - rho2, 0, None))
@@ -35,9 +28,9 @@ def heliographic(grid, r_ref, b0_deg):
 
 
 def derotation_coords(grid, r_ref, b0_deg, dt_s, rate_offset=None):
-    """Source pixel coordinates (rows, cols) in the frame at t for every pixel of the frame at t+dt_s,
-    and a mask of pixels whose source was on the visible disk. `rate_offset` = (a, b) adds
-    a + b·sin²(latitude) deg/day to the Snodgrass & Ulrich rate (a rate fitted to the data)."""
+    """Source pixel coordinates (rows, cols) in the frame at t for every pixel of the frame at t+dt_s, and a
+    mask of pixels whose source was on the visible disk.
+    """
     lat, lon = heliographic(grid, r_ref, b0_deg)
     rate = solar.synodic_deg_per_day(np.rad2deg(lat))
     if rate_offset is not None:
@@ -58,7 +51,7 @@ def persistence(frame):
 
 
 def rotated_persistence(frame, r_ref, b0_deg, dt_s, coords=None):
-    """B1. `coords` (from derotation_coords) can be passed when many frames share the same Δ and B0."""
+    """B1."""
     grid = frame.shape[0]
     if coords is None:
         coords = derotation_coords(grid, r_ref, b0_deg, dt_s)
@@ -70,8 +63,7 @@ def rotated_persistence(frame, r_ref, b0_deg, dt_s, coords=None):
 
 
 def optical_flow_extrapolation(prev, cur, r_ref, b0_deg, dt_prev_s, dt_s, win=31, levels=3):
-    """B2. Residual flow between `prev` derotated to the time of `cur` and `cur` (Farneback, OpenCV),
-    scaled by dt_s / dt_prev_s and applied on top of B1. Returns (forecast, flow)."""
+    """B2."""
     import cv2
     p = rotated_persistence(prev, r_ref, b0_deg, dt_prev_s)
     both = np.isfinite(p) & np.isfinite(cur)

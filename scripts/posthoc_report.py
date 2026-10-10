@@ -1,23 +1,8 @@
 """Post-hoc report: every test result against the pre-registered criteria (docs/PREREGISTRATION.md).
 
     python scripts/posthoc_report.py [--datasets final_offset,final_centred]
-
-Reads, per data set, whatever exists (missing parts are reported as pending):
-  eval/summary.csv, controls.csv, corotation.csv     validation (scripts/phase3_evaluate.py)
-  eval_test/summary.csv, eval_test/errors.parquet    the one-time sealed test
-  posthoc/flow_summary.csv                            optical-flow baseline (scripts/posthoc_flow_baseline.py)
-  posthoc/cross_from_*_summary.csv                   cross-mode transfer (scripts/posthoc_cross_mode.py)
-Criteria (constants below = the pre-registration):
-  P1 skill      test, disk, seed ensemble: 95 % CI lower bound of skill vs the strongest baseline > 0
-  P2 robust     the same with whole observing DAYS as bootstrap blocks (neighbouring windows are correlated)
-  P3 solar      P1 holds in BOTH pointing modes (offset: strong instrument background; centred: weak)
-  C1 frozen     validation: no model invents evolution (frozen-Sun control: upper CI of skill <= FROZEN_MAX)
-  C2 corotation validation: correction not fixed on the detector (fixed_share <= COROT_MAX at every horizon)
-  S*            secondary, reported: optical-flow baseline, cross-mode transfer, shuffled-context control
-Writes outputs/tests/report.json (the dashboard's Results window) and outputs/tests/REPORT.md.
 """
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
@@ -44,7 +29,9 @@ def read(p):
 
 
 def day_ci(err, method, strongest, horizon, n=BOOT, seed=0):
-    """Median skill with a bootstrap over whole observing days (coarser than the evaluation's run-hour blocks)."""
+    """Median skill with a bootstrap over whole observing days (coarser than the evaluation's run-hour
+    blocks).
+    """
     a, b = f"{REGION}|{method}", f"{REGION}|{strongest}"
     d = err[(err.horizon == horizon)].dropna(subset=[a, b])
     if not len(d):

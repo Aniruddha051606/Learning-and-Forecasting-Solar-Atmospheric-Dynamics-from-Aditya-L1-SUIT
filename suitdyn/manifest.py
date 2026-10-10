@@ -1,8 +1,4 @@
-"""Raw-data manifest: one row per SUIT FITS file, with its full header, checksum and derived labels.
-
-The manifest is what makes the processed data reproducible: every derived product points back to a
-file name and SHA-256, so the exact raw input can be re-downloaded from PRADAN and verified.
-"""
+"""Raw-data manifest: one row per SUIT FITS file, with its full header, checksum and derived labels."""
 import hashlib
 import json
 import re
@@ -34,7 +30,9 @@ def sha256(path, chunk=1 << 22):
 
 
 def parse_name(name):
-    """The last 8 characters of a SUIT file name: image type, program ID, size code, filter (User Manual §1.3)."""
+    """The last 8 characters of a SUIT file name: image type, program ID, size code, filter (User Manual
+    §1.3).
+    """
     code = Path(name).stem[-8:]
     return {"name_img_type": code[0], "name_prog_id": code[1:3], "name_size_code": code[3], "name_filter": code[4:]}
 
@@ -71,13 +69,9 @@ def name_time(name):
 
 
 def build(raw_root, workers=8, previous=None, settle_s=120.0, span=None):
-    """Manifest of every *.fits under raw_root. Rows of `previous` (an earlier manifest) are reused for
-    files whose path, size and modification time are unchanged, so only new or changed files are read
-    and checksummed. Partial downloads (*.fits.part) are never listed, and files modified in the last
-    `settle_s` seconds are left for a later run (the archive of record is a share that is still being
-    downloaded into). raw_root may be a UNC share written with forward slashes (//host/share/...)."""
-    # span = (t0, t1): only files whose name time is inside it are listed and read; rows of `previous`
-    # outside the span are kept unchanged (the archive grows as data sets need it).
+    """Manifest of every *.fits under raw_root."""
+    # span = (t0, t1): only files whose name time is inside it are listed and read; rows of `previous` outside
+    # the span are kept unchanged (the archive grows as data sets need it).
     now = time.time()
     files = sorted(Path(raw_root).rglob("*.fits"))
     outside = None
@@ -91,8 +85,8 @@ def build(raw_root, workers=8, previous=None, settle_s=120.0, span=None):
     reuse = {}
     if previous is not None and "mtime_ns" in previous:
         ok = previous["read_error"].isna()
-        # records, not itertuples: itertuples renames columns that are not identifiers ("DATE-OBS"),
-        # which silently dropped them from reused rows (found 2026-09-27, 11,837 rows without a time)
+        # records, not itertuples: itertuples renames columns that are not identifiers ("DATE-OBS"), which
+        # silently dropped them from reused rows (found 2026-09-27, 11,837 rows without a time)
         reuse = {(r["path"], r["bytes"], r["mtime_ns"]): r for r in previous[ok].to_dict("records")}
     todo, kept = [], []
     for f in files:

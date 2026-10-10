@@ -1,33 +1,4 @@
-"""The SUIT-DYN pipeline runner: one command from the raw archive to the evaluated models.
-
-    python -m suitdyn plan   [--dataset c0]                 what would run, what is up to date, and why
-    python -m suitdyn run    [--dataset c0] [--until STAGE] [--only STAGE] [--force STAGE] [--skip-archive]
-                             [--smoke] [--detach] [--with-test]
-    python -m suitdyn status [--dataset c0]                 state of every stage from the last runs
-
-Stages (scripts in scripts/, each also runnable alone):
-  archive  manifest -> frames                      frame-local, shared by every data set, incremental
-  dataset  registration -> sequences -> calibration -> store -> noise_maps -> response -> noise_maps_resp
-           -> samples -> background -> train:<model>:<seed> ... -> evaluate [-> evaluate_test, only with --with-test:
-           the one-time test evaluation; the test split is unsealed, the read logged, the model set recorded]
-Robustness:
-  * fingerprint per stage = the stage command, the code it runs (the script and every suitdyn module it
-    imports, transitively; progress/atomic/paths excluded because they cannot change a result), the config
-    files it reads, the data set's exact input files (manifest SHA-256s inside its time span), and the
-    fingerprints of the stages it depends on. A stage is skipped when its last run succeeded with the same
-    fingerprint and its outputs exist; anything upstream that changed makes it run again.
-  * crash safety: products are written atomically by the scripts; a store build that was interrupted with the
-    same fingerprint resumes (--resume); training resumes from last.pt; a training run whose fingerprint
-    changed is moved to runs/_superseded/ (never deleted) so it is not silently reused.
-  * preflight: free disk for the stages to run, the raw archive reachable, a CUDA GPU for GPU stages, no other
-    runner on the same data set (lock file with PID; a stale lock is taken over).
-  * network-bound stages are retried (share hiccups); Windows is kept awake while the runner runs; every
-    stage has its own log (outputs/pipeline/<name>/logs) and state (outputs/pipeline/<name>/state).
-  * --smoke: a quick end-to-end check (few batches, few evaluation samples); its runs and evaluation live in
-    runs_smoke/ and eval_smoke/, so a smoke test can never be taken for the real result.
-  * --detach: the runner restarts itself outside this terminal (WMI Win32_Process Create with a new process
-    group and no window), so it survives the session that launched it.
-"""
+"""The SUIT-DYN pipeline runner: one command from the raw archive to the evaluated models."""
 import argparse
 import ast
 import ctypes
@@ -38,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -172,13 +144,31 @@ def dataset_inputs_hash(ds):
     return hashlib.sha256("\n".join(sorted(m.sha256.dropna())).encode()).hexdigest()
 
 
+# Config tables that change how fast a stage runs, never what it produces: left out of fingerprints, so they can
+# be tuned between or during runs without making finished stages look changed (thermal limits, 2026-10-02).
+OPERATIONAL = {"configs/phase3.toml": ("thermal",)}
+
+
+def config_bytes(c):
+    """A config's contribution to a fingerprint: the file's bytes or, for a config with operational tables,
+    its parsed content without them, canonically serialised.
+    """
+    drop = OPERATIONAL.get(c)
+    if not drop:
+        return (ROOT / c).read_bytes()
+    d = tomllib.loads((ROOT / c).read_text(encoding="utf-8"))
+    for k in drop:
+        d.pop(k, None)
+    return json.dumps(d, sort_keys=True, default=str).encode()
+
+
 def fingerprint(stage, fps, ds, smoke):
     h = hashlib.sha256()
     h.update(json.dumps([stage.script, stage.args, smoke]).encode())
     for f in code_files(stage.script):
         h.update(f.relative_to(ROOT).as_posix().encode() + f.read_bytes())
     for c in stage.configs:
-        h.update((ROOT / c).read_bytes())
+        h.update(config_bytes(c))
     if stage.scope == "dataset" and stage.name == "registration":
         h.update(dataset_inputs_hash(ds).encode())
     for d in stage.deps:
@@ -300,8 +290,7 @@ TRANSIENT = ("OSError", "ConnectionError", "ConnectionResetError", "TimeoutError
 
 
 def transient(log):
-    """Retry only failures that can go away by themselves (the share, the network, a locked file). A code error
-    such as a TypeError fails the same way every time: retrying it once cost 1.5 h (2026-09-28)."""
+    """Retry only failures that can go away by themselves (the share, the network, a locked file)."""
     tail = Path(log).read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
     last = next((ln for ln in reversed(tail) if ln and not ln.startswith(" ")), "")
     return any(t in last for t in TRANSIENT) or not any("Error" in ln or "Traceback" in ln for ln in tail)

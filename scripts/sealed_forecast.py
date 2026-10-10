@@ -1,16 +1,6 @@
 """Sealed blind forecasts beyond the data (docs/PREREGISTRATION.md, Addendum B).
 
     python scripts/sealed_forecast.py [--jumps 18] [--device cuda] [--out DIR]
-
-The 6 frozen final_offset models get ONLY frames we already have: the last continuous observing stretch of
-final_offset (its frame cache ends 2026-09-27 14:58:26 UT, so nothing later can be read). They forecast
-  B-short  from each of the last 5 frames, at the trained horizons 20/40/80/160 frames (target = origin + h x 89 s);
-  B-roll   chained jumps of the trained horizon 160 (3.96 h each): jump 1 from the last 4 x jumps + 5 real frames,
-           every later jump from 5-frame contexts made only of the previous jump's forecasts. Each seed rolls its
-           own forecasts; an architecture's ensemble is the mean of its seeds' rollouts.
-Writes outputs/sealed_forecast/<UTC time>/: forecast arrays (float16, the 384 frame-cache grid and units, NaN = no
-forecast), target times, checksums of the models, cache, background and this script, previews, and SEAL.json (the
-SHA-256 of every file and one digest over them). It changes nothing in the pipeline's outputs.
 """
 import argparse
 import hashlib

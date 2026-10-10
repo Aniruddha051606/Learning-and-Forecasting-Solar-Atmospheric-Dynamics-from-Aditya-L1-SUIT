@@ -1,5 +1,6 @@
 """Guards added before the final run: pointing clusters, split embargo, sample index, one-time test reads,
-pointing-grouped backgrounds, evaluation metrics, environment record."""
+pointing-grouped backgrounds, evaluation metrics, environment record.
+"""
 import importlib
 import json
 import sys

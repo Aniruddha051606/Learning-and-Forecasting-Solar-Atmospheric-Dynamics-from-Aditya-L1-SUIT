@@ -1,13 +1,6 @@
 """Draft a data-set config per pointing cluster from the pointing-mode scan (scripts/pointing_modes.py).
 
     python scripts/propose_splits.py [--train 0.70 --val 0.15] [--min-days 2] [--write]
-
-For every pointing cluster with at least --min-days of NB03 full-disk frames: chronological train / val / test
-by observing time (fractions of the frames), each boundary placed in the real observing gap (> 30 min) closest
-to its target, so no run is cut (suitdyn.sequences.assign_splits would refuse). The data set's rules are those
-of configs/datasets/v0.toml (exclusions, first-frame rule, windows) with a 4-h embargo; the time span selects the cluster.
-Prints the drafts; --write saves them as configs/datasets/final_<mode>.toml (a suffix _<n> only when two clusters
-share a mode). Review before running.
 """
 import argparse
 import sys

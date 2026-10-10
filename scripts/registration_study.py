@@ -1,24 +1,6 @@
 """Registration study and adopted per-frame transforms, plus the Phase 1 frame-level QC decision.
 
     python scripts/registration_study.py
-
-What Phase 1 found (docs/PHASE1.md §Registration), which this script implements and re-checks:
-  * The pointing oscillates smoothly (period ~1.5-2 h, ±6 px x, ±10 px y in 2048 frames) and
-    jumps by 5-9 px a few times a day. Header CRPIX follows the oscillation.
-  * Phase correlation of consecutive frames cannot measure sub-pixel motion: it locks on a pattern
-    fixed on the CCD and returns ~0. It is reliable only for shifts of more than ~1 px, so it is used
-    to find the jumps and nothing else.
-  * A limb fit with distortion harmonics is 3-4x noisier than a plain circle on real frames (the
-    harmonics trade off against the centre over a 65-75 % limb). The circle is used, always on the
-    same set of rays so that the distortion bias is the same in every frame.
-
-Adopted NB03 centre = circle-fit centre, outliers removed, smoothed by a local quadratic within each
-jump-free segment. Radius = robust mean per segment, scaled by the Sun-spacecraft distance.
-Unbinned burst frames: per-frame circle fit on their own common ray set (checked against the NB03
-pointing, see summary).
-
-Validation: register frame pairs 15-90 min apart; the measured image motion minus predicted solar
-rotation must be ~0. Done for the adopted method and for header-only and unsmoothed alternatives.
 """
 import json
 import sys
@@ -38,8 +20,7 @@ from suitdyn import atomic, config, geometry, io, motion, paths, pointing, regis
 
 # Data-set scoped (suitdyn/paths.py): only frames inside the data set's time span (configs/datasets/<name>.toml,
 # widened by [scope] margin_h) are registered, and the fixed pattern for motion and the robust QC statistics
-# come from those frames alone. Registering a larger archive changed earlier results (PHASE3 4c: up to
-# 0.8/1.3 px, 13 new limb outliers), so a data set must never depend on frames outside it.
+# come from those frames alone.
 CFG = config.load_dataset()
 ARC = paths.archive()
 OUT = paths.phase1()
@@ -74,8 +55,9 @@ def circle_fits(df, rays):
 
 
 def local_quadratic(t, v, half_window_s, clip=4.0):
-    """Robust local quadratic smoother: at each time, fit a quadratic to the points within
-    ±half_window_s, drop points beyond clip robust sigma, refit, evaluate at that time."""
+    """Robust local quadratic smoother: at each time, fit a quadratic to the points within ±half_window_s,
+    drop points beyond clip robust sigma, refit, evaluate at that time.
+    """
     t = np.asarray(t, float)
     v = np.asarray(v, float)
     out = np.empty_like(v)
@@ -101,9 +83,9 @@ def pointing_mode(x0, y0, size):
 
 
 def _segment_positions(job):
-    """Image-content positions of every frame of one jump-free segment, relative to its first frame,
-    rotation removed. Keyframes every KEY frames are linked to each other; every frame is correlated
-    with its nearest keyframe (never chained frame to frame)."""
+    """Image-content positions of every frame of one jump-free segment, relative to its first frame, rotation
+    removed.
+    """
     files, paths, ts, rot_rate, fp = job
     n = len(files)
     prep = {}
@@ -174,9 +156,7 @@ def adopt_nb03(nb, fp):
 
 
 def adopt_full(full, nb):
-    """Burst frames: own circle fit (their own common rays). The NB03 pointing interpolated to the
-    frame time (x_4096 = 2·x_2048 + 0.5) is recorded next to it to measure the per-filter image
-    offsets from the filter wedges (Tripathi et al. 2025, Table 4)."""
+    """Burst frames: own circle fit (their own common rays)."""
     full = full.sort_values("t").copy()
     t_nb = nb.t.astype("int64").values
     t_f = full.t.astype("int64").values
@@ -202,10 +182,8 @@ def register_frame(row, path, x0, y0, Rr):
 
 def validate(nb, fp, lags=(1, 10, 40), n_per_lag=20, seed=0):
     """Independent check: pairs of frames in DIFFERENT jump-free segments of the same run, whose absolute
-    positions come from independent limb anchors. The image motion between them (fixed pattern removed,
-    detector px) minus predicted rotation must equal the difference of their adopted centres. Lag 1 =
-    the jump pair itself. The same pairs score the alternatives: per-frame circle, smoothed circle
-    (the method first adopted and then rejected), and the header."""
+    positions come from independent limb anchors.
+    """
     man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path", "HGLT_OBS"]).set_index("file")
     rng = np.random.default_rng(seed)
     rows = []
@@ -236,8 +214,7 @@ def validate(nb, fp, lags=(1, 10, 40), n_per_lag=20, seed=0):
 
 
 def qc_decision(fr):
-    """Frame-level QC. Reject = unusable; flags = usable but recorded. z-scores are robust, computed on
-    this archive's own distributions."""
+    """Frame-level QC."""
     reasons, usable = [], []
     for _, r in fr.iterrows():
         rs, ok = [], True
@@ -306,7 +283,8 @@ def figures(nb, val, fp_info):
 
 def before_after(nb):
     """A pair ~60 min apart spanning a large pointing excursion: raw difference vs registered and
-    rotation-shifted difference."""
+    rotation-shifted difference.
+    """
     man = pd.read_parquet(ARC / "manifest.parquet", columns=["file", "path"]).set_index("file").path
     best, pair = -1, None
     for _, g in nb.groupby("segment"):

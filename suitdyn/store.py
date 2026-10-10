@@ -1,15 +1,4 @@
-"""Training store: calibrated, registered NB03 frames in Zarr, with per-frame provenance.
-
-Layout (docs/PHASE1.md §6):
-  <store>.zarr/nb03/image   float16 [T, G, G]  chunks (1, G, G), zstd   calibrated counts at the nominal exposure
-  <store>.zarr/nb03/mask    uint8   [T, G, G]  chunks (1, G, G), zstd   QC bits after resampling (255 = no source)
-  <store>.frames.parquet    one row per T: frame_id (raw file), t, split, run, registration, calibration
-  attrs                     grid, r_ref, pipeline commit, config hashes, manifest hash, calibration files
-
-Values are counts scaled to the nominal exposure (EXPOSURE_REF_MS), not counts per second: float16
-holds up to 65504 and the encoding ceiling of the raw data is 62767, so no finite value overflows. The exposure is the commanded one (CMD_EXPT);
-see calibrate().
-"""
+"""Training store: calibrated, registered NB03 frames in Zarr, with per-frame provenance."""
 import hashlib
 import json
 
@@ -21,9 +10,7 @@ EXPOSURE_REF_MS = 300.0
 
 
 def calibrate(im, row, pattern, pattern_mode, seam_fn=None, log_response=None):
-    """Raw frame → calibrated counts at the nominal exposure. Steps are applied in this order and each is
-    optional so the effect of each can be measured: fixed pattern, seam, large-scale detector response
-    (divide by exp(r), r from suitdyn.largescale, in detector coordinates), exposure."""
+    """Raw frame → calibrated counts at the nominal exposure."""
     out = im
     if pattern is not None:
         out = flat.correct(out, pattern, pattern_mode)
@@ -31,8 +18,8 @@ def calibrate(im, row, pattern, pattern_mode, seam_fn=None, log_response=None):
         out = seam_fn(out)
     if log_response is not None:
         out = out / np.exp(np.nan_to_num(log_response, nan=0.0))
-    # Commanded exposure, not MEAS_EXP: within runs the NB03 pixel data do not follow MEAS_EXP's ±1 %
-    # quantised values (correlation −0.005; dividing by it raises frame-to-frame scatter 0.24 → 0.37 %).
+    # Commanded exposure, not MEAS_EXP: within runs the NB03 pixel data do not follow MEAS_EXP's ±1 % quantised
+    # values (correlation −0.005; dividing by it raises frame-to-frame scatter 0.24 → 0.37 %).
     return out * (EXPOSURE_REF_MS / float(row["CMD_EXPT"]))
 
 

@@ -6,7 +6,8 @@ from suitdyn import register
 
 def test_transform_matches_astropy_wcs():
     """Our transform must agree with astropy's reading of the same FITS WCS (HPLN-TAN, CROTA2), with the
-    fitted centre and a radius-derived plate scale substituted, to well under a pixel."""
+    fitted centre and a radius-derived plate scale substituted, to well under a pixel.
+    """
     x0, y0, R_fit, crota, rsun = 1281.4, 597.2, 699.3, -1.93, 972.45
     grid, r_ref = 1536, 690.0
     cdelt = rsun / R_fit
@@ -21,8 +22,7 @@ def test_transform_matches_astropy_wcs():
     c = (grid - 1) / 2
     for u, v in [(c, c), (c + 600, c), (c, c - 650), (c - 400, c + 420)]:
         hp = np.array([u - c, v - c]) * rsun / r_ref
-        # astropy: world → pixel (0-based)
-        # astropy normalises celestial world coordinates to degrees
+        # astropy: world → pixel (0-based) astropy normalises celestial world coordinates to degrees
         px = np.array(w.wcs_world2pix([[hp[0] / 3600, hp[1] / 3600]], 0)[0])
         ours = A @ np.array([u, v]) + b
         assert np.allclose(ours, px, atol=0.05), (u, v, ours, px)

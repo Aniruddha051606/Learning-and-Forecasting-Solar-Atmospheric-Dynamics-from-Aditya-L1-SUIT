@@ -1,12 +1,4 @@
-"""Configuration: settings files, the current data set, and provenance recorded with every output.
-
-  configs/phase1.toml            archive paths, limb fit, QC, calibration and registration settings
-  configs/datasets/<name>.toml   one data set: pointing mode, exclusions, time splits, windows
-  configs/phase3.toml            the learning stage: samples, models, training, evaluation, controls
-
-The current data set is the environment variable SUITDYN_DATASET (default v0). Where its products
-live is suitdyn/paths.py.
-"""
+"""Configuration: settings files, the current data set, and provenance recorded with every output."""
 import hashlib
 import os
 import subprocess
@@ -37,7 +29,8 @@ PACKAGES = ("numpy", "pandas", "scipy", "astropy", "zarr", "pyarrow", "torch", "
 
 def environment():
     """Python, platform and the versions of the packages that can change a result (read from package
-    metadata, so nothing heavy is imported). Recorded with every product next to the git state."""
+    metadata, so nothing heavy is imported).
+    """
     import platform
     from importlib import metadata
     env = {"python": platform.python_version(), "platform": platform.platform()}
@@ -74,7 +67,8 @@ def load_phase3():
 
 def dataset_span(cfg, margin_h=None):
     """Time span of a data set (earliest split start, latest split end), widened by a margin so that
-    registration smoothing and QC statistics near the edges see their neighbours."""
+    registration smoothing and QC statistics near the edges see their neighbours.
+    """
     margin = pd.Timedelta(hours=cfg.get("scope", {}).get("margin_h", 3) if margin_h is None else margin_h)
     ranges = [v for k, v in cfg["split"].items() if k in ("train", "val", "test")]
     starts = [pd.Timestamp(v[0]) for v in ranges]

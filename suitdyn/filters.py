@@ -1,4 +1,4 @@
-"""SUIT science filters, from Tripathi et al. 2025 (Sol. Phys., arXiv 2501.02274), Table 1."""
+"""SUIT science filters, from Tripathi et al. 2025 (Sol."""
 
 # name: (central wavelength nm, FWHM nm, what it samples)
 FILTERS = {

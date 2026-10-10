@@ -1,16 +1,6 @@
 """Phase 2 fix: is the one-frame noise floor instrumental or partly solar (3-min chromospheric oscillation)?
 
     python scripts/phase2_floor_origin.py --store v0
-
-Structure function of the rotation-corrected difference, D(tau) = median over frame pairs of the relative
-MAE between B1(F(t)) and F(t+tau) on the disk, for every pair of frames in the same run with
-tau up to ~10 min. Instrument noise, registration residuals and slow solar evolution make D rise
-monotonically with tau. A strong oscillation with period P makes D dip near tau = P (back in
-phase) after a maximum near P/2. Mg II k shows ~3-min oscillations, so the test is a dip near 180 s.
-
-The 87-s cadence samples tau = 87, 174, 261 s; the short 21-s-cadence stretch of 23 Sep (training
-split; used here only for this physical test, never for model evaluation) samples it finely.
-Response correction and per-frame median normalisation are applied as in the baselines.
 """
 import argparse
 import json

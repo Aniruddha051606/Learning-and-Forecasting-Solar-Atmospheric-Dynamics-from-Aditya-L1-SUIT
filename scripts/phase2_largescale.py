@@ -1,18 +1,6 @@
 """Phase 2 fix: self-calibrate the NB03 large-scale detector response (vignetting, seam, bands).
 
     python scripts/phase2_largescale.py [--train-frames 140] [--centred-frames 100] [--knot 32]
-
-Fit (suitdyn/largescale.py) on pattern-corrected, 2x2-averaged frames: training-split offset-mode frames
-plus centred-mode frames (never validation or test). Quiet-disk pixels only: per frame, pixels within
-0.85-1.2 of the frame's own mu-annulus median, away from the seam band and the vignetted CCD edge.
-
-Validation against measurements the fit never saw:
-  V1  the gradient of the fitted response must predict the per-pixel pointing sensitivity measured from
-      one-frame differences on the VALIDATION split (phase2_noise_maps.py): slope = −100 ∂r/∂x_det;
-  V2  the fitted seam step must match the step measured directly across x = 1023|1024 (Phase 1 seam
-      profiles, offset-mode frames);
-  V3  (downstream) a store corrected with it (build_store.py --response-map) must lower the validation
-      pointing sensitivity and baseline errors below the first-order correction (phase2_response.py).
 """
 import argparse
 import hashlib

@@ -13,11 +13,7 @@ def synodic_deg_per_day(lat_deg):
 
 
 def disk_centre_motion_px(R_px, b0_deg, dt_s, crota2_deg):
-    """Image displacement (dx, dy) of features at disk centre over dt_s, in detector pixels.
-
-    At disk centre (longitude 0, latitude B0) a feature moves along solar west at R·cos(B0)·ω(B0);
-    the solar west-north frame is turned into detector axes by the header roll CROTA2. The sign
-    convention (+x = solar west) is checked against the data in the registration study, not assumed."""
+    """Image displacement (dx, dy) of features at disk centre over dt_s, in detector pixels."""
     w = np.deg2rad(synodic_deg_per_day(b0_deg)) / 86400.0
     v = R_px * np.cos(np.deg2rad(b0_deg)) * w * dt_s
     a = np.deg2rad(-crota2_deg)

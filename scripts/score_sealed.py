@@ -1,19 +1,6 @@
 """Score the sealed blind forecasts against the answer frames (docs/PREREGISTRATION.md, Addendum B; test D3).
 
     python scripts/score_sealed.py --sealed outputs/sealed_forecast/<UTC time>
-
-1. The seal is checked first: every file's SHA-256 and the digest are recomputed and must equal SEAL.json; if not,
-   nothing is scored.
-2. Each forecast is compared with its answer frame (scripts/answer_frames.py: nearest real frame within +-2 min),
-   the forecast derotated by the small time difference. Disk r < 0.9, MAE, on pixels where the answer, the forecast
-   and every baseline are valid.
-3. References: the physical baselines made from the SAME origin frames (the 5-frame real context that ends at the
-   forecast's origin), derotated to the answer time: B1, B1-avg, B1-avg-LDadd, B1-avg-bgS, and B1-avg-clim where a
-   trained-horizon map exists (B-short; jump 1 of B-roll). The strongest is chosen on the scored targets.
-4. Skill = 1 - MAE(model) / MAE(strongest), reported per target and as medians: B-short per horizon, B-roll per
-   jump. Targets whose real frames were already in the raw archive at sealing (27 Sep 17:06-18:58 UT) are marked
-   'in_archive_at_sealing' and summarised separately.
-Writes outputs/sealed_forecast/score_<sealed name>/ (per_target.csv, summary.csv, SCORE.md).
 """
 import argparse
 import hashlib
@@ -56,7 +43,7 @@ def main():
     from suitdyn.ml import geometry
 
     sealed = Path(a.sealed)
-    # 1. the seal
+    # 1.
     seal = json.loads((sealed / "SEAL.json").read_text())
     files = {p.relative_to(sealed).as_posix(): sha(p) for p in sorted(sealed.rglob("*")) if p.is_file() and p.name != "SEAL.json"}
     digest = hashlib.sha256("".join(f"{k} {v}\n" for k, v in files.items()).encode()).hexdigest()
@@ -127,7 +114,7 @@ def main():
             rec[name] = float((p - y).abs()[valid].mean()) if n else np.nan
         rows.append(rec)
 
-    # B-short: origins = the last 5 real frames (indices R-5 .. R-1), horizons 20/40/80/160
+    # B-short: origins = the last 5 real frames (indices R-5 ..
     hs = [int(h) for h in inp["horizons"]]
     short = {m: np.load(sealed / f"short_{m}.npy") for m in METHODS}
     for k in range(K):

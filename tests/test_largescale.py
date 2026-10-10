@@ -4,9 +4,10 @@ from suitdyn import largescale
 
 
 def test_recovers_response_with_seam_step_from_two_pointings():
-    """Synthetic detector response (smooth gradient + a row-dependent step at the seam) under a
-    limb-darkened disk observed at two pointings 480 px apart plus jitter: the fit must recover the
-    response (up to the constant fixed by the constraints) and the seam step."""
+    """Synthetic detector response (smooth gradient + a row-dependent step at the seam) under a limb-darkened
+    disk observed at two pointings 480 px apart plus jitter: the fit must recover the response (up to the
+    constant fixed by the constraints) and the seam step.
+    """
     rng = np.random.default_rng(0)
     size = 2048
 

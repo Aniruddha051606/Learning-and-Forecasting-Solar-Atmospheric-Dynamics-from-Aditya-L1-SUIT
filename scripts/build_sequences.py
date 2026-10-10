@@ -1,21 +1,6 @@
 """Phase 2: data-set frame list, splits, window index, test seal, burst snapshots.
 
     python scripts/build_sequences.py [--reseal]
-
-Reads the archive manifest and the data set's registration (outputs/datasets/<name>/phase1); writes
-outputs/datasets/<name>/sequences/:
-  frames.parquet     NB03 frames in the data set (one row each: frame_id, t, split, run, flags)
-  excluded.parquet   NB03 frames left out, with the reason
-  windows.parquet    every (context, horizon) window, all splits
-  bursts.parquet     multi-filter snapshots, every filter listed, missing ones explicit
-  test_seal.json     hash of the test frame list (reading test windows needs an explicit unseal)
-  embargoed.parquet  frames dropped so each split starts >= [split] embargo_h after the previous one ends
-  summary.json       counts per split / horizon, independent-hours estimate, provenance
-
-The test seal is never silently replaced. If a rebuild gives the same test frames, the existing seal (with
-its log of every unseal) is kept as it is. If the test frames changed (for example files for those dates
-arrived later), the build stops unless --reseal is given; the old seal is then kept as
-test_seal_superseded_<time>.json.
 """
 import argparse
 import hashlib

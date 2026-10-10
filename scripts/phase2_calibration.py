@@ -1,17 +1,6 @@
 """Phase 2, step 1: NB03 detector fixed-pattern calibration study.
 
     python scripts/phase2_calibration.py [--frames 320]
-
-Questions answered, each with a number in <out>/calibration/calibration_summary.json:
-  Q1  Is the pattern stable?  Split-half, day-to-day, and across the 24 Sep instrument-state change
-      (PHASE1.md A11) correlations of independent estimates.
-  Q2  (diagnostic only) slopes of bright-frame vs dark-frame estimates. This cannot separate a
-      multiplicative from an additive pattern (noise in both estimates flattens both slopes, and both
-      hypotheses predict the same slope ratio; docs/PHASE2.md §2). The decision is made by the
-      plage-lever test in phase2_calibration_followup.py, which also adopts the pattern.
-  Q3  split-half residual in both representations.
-Writes, for the follow-up: nb03_pattern_relative.npy (median relative residual, offset mode),
-nb03_level.npy (median smoothed level), nb03_group_patterns.npz (every subset estimate).
 """
 import argparse
 import json
@@ -59,7 +48,8 @@ def _job(args):
 
 def select_frames(n, n_centred=120):
     """n offset-mode frames spread over time (the dataset), plus up to n_centred centred-mode frames used
-    only to test that the pattern is fixed to the detector."""
+    only to test that the pattern is fixed to the detector.
+    """
     reg = pd.read_parquet(OUT / "registration.parquet")
     man = pd.read_parquet(OUT / "manifest.parquet", columns=["file", "path", "clip_lo", "clip_hi"])
     nb = reg[(reg.frame == "full_binned") & reg.qc_usable].merge(man, on="file").sort_values("t")
@@ -78,10 +68,9 @@ def corr(a, b, m):
 
 
 def block_pass(rel_mm, sm_mm, groups, abs_groups, off, rows=32):
-    """One pass over row blocks: every group median (relative residual), absolute-residual medians for
-    the held-out halves, the per-pixel bright/dark medians, and the median smoothed level. Each block is
-    read once; memory stays at a few hundred MB (the first version took the median of the whole cache
-    in one call and ran out of memory)."""
+    """One pass over row blocks: every group median (relative residual), absolute-residual medians for the
+    held-out halves, the per-pixel bright/dark medians, and the median smoothed level.
+    """
     P = {k: np.full(SHAPE, np.nan, np.float32) for k in groups}
     Pabs = {k: np.full(SHAPE, np.nan, np.float32) for k in abs_groups}
     bd = {k: np.full(SHAPE, np.nan, np.float32) for k in ("rel_b", "rel_d", "abs_b", "abs_d", "sm_b", "sm_d")}
@@ -154,8 +143,7 @@ def main():
     np.save(CAL / "nb03_level.npy", level_map.astype(np.float32))
     np.savez_compressed(CAL / "nb03_group_patterns.npz", **{k: v.astype(np.float32) for k, v in P.items()})
 
-    # Q3: held-out. What is left in half B after removing half A's pattern, in each representation
-    # (absolute residuals divided by the level so both are in the same units).
+    # Q3: held-out.
     lev = np.nanmedian(level_map[disk])
     resid_rel = float(np.nanstd((P["B"] - P["A"])[disk]))
     resid_abs = float(np.nanstd(((Pabs["B"] - Pabs["A"]) / level_map)[disk]))

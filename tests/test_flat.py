@@ -15,9 +15,9 @@ def test_smooth_within_does_not_leak_across_seam():
 
 
 def test_multiplicative_pattern_recovered_from_moving_scene():
-    """A scene drifting across the detector under a fixed multiplicative pattern: the per-pixel median
-    of relative residuals recovers the pattern. Contrasts as measured on NB03 in Phase 1: high-passed
-    scene ~10 % rms, pattern ~4 % rms."""
+    """A scene drifting across the detector under a fixed multiplicative pattern: the per-pixel median of
+    relative residuals recovers the pattern.
+    """
     rng = np.random.default_rng(0)
     H = W = 384
     g = gaussian_filter(rng.normal(0, 1, (H + 80, W + 80)), 3)

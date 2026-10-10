@@ -1,17 +1,6 @@
 """Post-hoc test: detector-fixed correction removal (docs/PREREGISTRATION.md, Addendum C; exploratory).
 
     python scripts/posthoc_fixed_removal.py --dataset final_offset [--per-horizon 400] [--device cuda]
-
-For each final model and horizon, M(H) = the per-pixel mean of the model's correction (forecast minus its
-background-aware B1) over TRAINING samples. On the VALIDATION split three forecasts per model are scored, with the
-evaluation's own regions, metrics and run-hour block bootstrap (scripts/phase3_evaluate.py):
-  <model>          the model as evaluated
-  <model>-minusM   the model minus M(H): skill that depends on the input frames
-  <model>-Monly    background-aware B1 plus M(H): what a static map gives without solar information
-  <model>-avgM     the strongest baseline (B1-avg-bgS) plus M(H)        (amendment: the fair "map only")
-  B1-avg-bgS-smooth<s>  the strongest baseline smoothed (sigma s px)   (amendment: what pure denoising gives)
-and their seed ensembles. Writes outputs/datasets/<name>/phase3/posthoc/fixed_removal_{summary.csv,errors.parquet,
-maps_<G>.npz,meta.json}. The test split is not read.
 """
 import argparse
 import os
@@ -56,7 +45,7 @@ def main():
     th = thermal.controller(P3["thermal"], dev, sync=torch.cuda.synchronize if dev.startswith("cuda") else None)
     G, horizons = bank.G, sorted(set(int(h) for h in bank.horizon))
 
-    # 1. M(H) per run from training samples
+    # 1.
     rng = np.random.default_rng(0)
     tr = bank.ids("train")
     pick = np.concatenate([rng.choice(tr[bank.horizon[tr] == h], min(a.per_horizon, int((bank.horizon[tr] == h).sum())),
@@ -80,7 +69,7 @@ def main():
     np.savez_compressed(out_dir / f"fixed_removal_maps_{G}.npz",
                         **{f"{n}_H{h}": M[(n, h)].cpu().numpy().astype(np.float32) for n in names for h in horizons})
 
-    # 2. score on validation
+    # 2.
     rho = torch.sqrt(torch.clamp(1 - bank.mu ** 2, min=0))
     inner = bank.mu > float(np.sqrt(1 - E["disk_rho_max"] ** 2))
     ids_all = bank.ids("val")
