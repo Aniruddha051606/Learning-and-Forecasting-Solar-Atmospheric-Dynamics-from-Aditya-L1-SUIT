@@ -66,7 +66,7 @@ def main():
     torch.set_num_threads(a.threads)
     import phase3_evaluate as pe
     from suitdyn import atomic, paths, progress
-    from suitdyn.ml import data
+    from suitdyn.ml import data, thermal
 
     t0 = time.time()
     E, dev = pe.P3["eval"], a.device
@@ -80,7 +80,9 @@ def main():
     if a.max_samples:
         ids_all = ids_all[np.linspace(0, len(ids_all) - 1, min(a.max_samples, len(ids_all))).astype(int)]
     idx, rows, shifts = bank.index, [], []
+    th = thermal.controller(pe.P3["thermal"], dev, sync=torch.cuda.synchronize if str(dev).startswith("cuda") else None)
     for n0 in range(0, len(ids_all), 8):
+        th.check()
         ids = ids_all[n0:n0 + 8]
         progress.report("posthoc: flow baseline", item=f"batch {n0 // 8 + 1}", i=n0 // 8, n=(len(ids_all) + 7) // 8)
         b = bank.batch(ids, "plain")

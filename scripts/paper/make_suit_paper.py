@@ -19,6 +19,7 @@ DS = {"final_offset": "offset", "final_centred": "centred"}
 ENS = {"unet_bg-ens": "U-Net", "convlstm_bg-ens": "ConvLSTM"}
 COL = {"unet_bg-ens": "#3a6aa6", "convlstm_bg-ens": "#c25d27"}
 MARK = {"final_offset": ("o", "-"), "final_centred": ("s", "--")}
+MK = {"unet_bg-ens": "o", "convlstm_bg-ens": "s"}  # model markers: figures must read in black and white too
 REGIONS = ["disk", "trusted", "plage", "ring_inner", "ring_mid", "ring_outer"]
 
 
@@ -32,7 +33,7 @@ def pct(x):
 
 def save(fig, name):
     for ext in ("png", "pdf"):
-        fig.savefig(OUT / "figures" / f"{name}.{ext}", dpi=200, bbox_inches="tight")
+        fig.savefig(OUT / "figures" / f"{name}.{ext}", dpi=400, bbox_inches="tight")
 
 
 def tables():
@@ -214,14 +215,15 @@ def figures(T, rep, example_device):
         for m, name in ENS.items():
             d = t2[(t2.dataset == ds) & (t2.model == name)].sort_values("minutes")
             ax[k].errorbar(d.minutes, d.skill_pct, yerr=[d.skill_pct - d.ci_lo_pct, d.ci_hi_pct - d.skill_pct], color=COL[m],
-                           marker=MARK[ds][0], ls="-", capsize=2, label=f"{name}, sealed test")
+                           marker=MK[m], ls="-", capsize=2, label=f"{name}, sealed test")
             v = val[(val.region == "disk") & (val.method == m)].sort_values("minutes")
-            ax[k].plot(v.minutes, 100 * v.skill_vs_strongest, color=COL[m], marker=MARK[ds][0], mfc="none", ls=":", label=f"{name}, validation")
+            ax[k].plot(v.minutes, 100 * v.skill_vs_strongest, color=COL[m], marker=MK[m], mfc="none", ls=":", label=f"{name}, validation")
             if ds == "final_offset" and "T11_new_period_v2" in T:
                 g = T["T11_new_period_v2"]
                 g = g[g.model == name].sort_values("minutes")
                 ax[k].errorbar(g.minutes * 1.04, g.skill_pct, yerr=[g.skill_pct - g.ci_lo_pct, g.ci_hi_pct - g.skill_pct],
-                               color=COL[m], marker="^", ms=4, ls="--", lw=0.9, capsize=2, label=f"{name}, 28 Sep - 6 Oct")
+                               color=COL[m], marker=MK[m], ms=3.5, mfc="white", ls="--", lw=0.9, capsize=2,
+                               label=f"{name}, independent period")
         ax[k].axhline(0, color="0.3", lw=0.8)
         ax[k].set_xscale("log")
         ax[k].set_xticks([30, 60, 120, 240])
@@ -229,7 +231,11 @@ def figures(T, rep, example_device):
         ax[k].minorticks_off()
         ax[k].set_title(f"{DS[ds]} pointing")
     ax[0].set_ylabel("MAE skill over the strongest\nphysical baseline (%)")
-    ax[1].legend(fontsize=7, loc="upper left")
+    hl = {}
+    for a_ in ax:  # one legend for both panels (the independent period is only in the offset panel)
+        for h_, l_ in zip(*a_.get_legend_handles_labels()):
+            hl.setdefault(l_, h_)
+    fig.legend(hl.values(), hl.keys(), fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.02), ncol=3)
     save(fig, "F1_skill_vs_horizon")
     plt.close(fig)
     # F2 regions (sealed test)
@@ -241,7 +247,8 @@ def figures(T, rep, example_device):
             for hh, alpha in ((20, 0.45), (160, 1.0)):
                 d = t4[(t4.dataset == ds) & (t4.model == name) & (t4.horizon_frames == hh)].set_index("region").reindex(REGIONS)
                 x = np.arange(len(REGIONS)) + (j - 0.5) * 0.38 + (0.09 if hh == 160 else -0.09)
-                ax[k].bar(x, d.skill_pct, width=0.17, color=COL[m], alpha=alpha, label=f"{name}, {'~30 min' if hh == 20 else '~4 h'}")
+                ax[k].bar(x, d.skill_pct, width=0.17, color=COL[m], alpha=alpha, hatch="////" if j else None, edgecolor="white",
+                          linewidth=0, label=f"{name}, {'~30 min' if hh == 20 else '~4 h'}")
                 ax[k].errorbar(x, d.skill_pct, yerr=[d.skill_pct - d.ci_lo_pct, d.ci_hi_pct - d.skill_pct], fmt="none", ecolor="0.25", lw=0.6)
         ax[k].set_xticks(range(len(REGIONS)))
         ax[k].set_xticklabels([lab[r] for r in REGIONS], rotation=30, fontsize=7.5)
@@ -259,26 +266,29 @@ def figures(T, rep, example_device):
         c["h"] = c.horizon_frames.astype(int)
         for m in ENS:
             d = c[c.run.str.startswith(m.split("_")[0])].groupby("h").value_pct.agg(["min", "max", "mean"])
-            ax[0].plot(d.index, d["mean"], color=COL[m], marker=MARK[ds][0], ls=MARK[ds][1], label=f"{ENS[m]}, {DS[ds]}")
+            ax[0].plot(d.index, d["mean"], color=COL[m], marker=MARK[ds][0], ls=MARK[ds][1],
+                       mfc="white" if m.startswith("convlstm") else COL[m], label=f"{ENS[m]}, {DS[ds]}")
             ax[0].fill_between(d.index, d["min"], d["max"], color=COL[m], alpha=0.12)
     ax[0].axhline(20, color="#a33", lw=1, ls="--")
-    ax[0].text(22, 21, "C2 limit 20 %", color="#a33", fontsize=7)
+    ax[0].text(22, 19.3, "C2 limit 20 %", color="#a33", fontsize=7, va="top")
     ax[0].set_xscale("log")
     ax[0].set_xticks([20, 40, 80, 160])
     ax[0].set_xticklabels(["30 min", "1 h", "2 h", "4 h"])
     ax[0].minorticks_off()
     ax[0].set_ylabel("share of the correction that\nis one fixed map (%)")
-    ax[0].legend(fontsize=6.5, loc="upper left", bbox_to_anchor=(0.0, 0.88))
+    ax[0].legend(fontsize=6.5, loc="upper left")
     sub = t5[t5.control.isin(["frozen", "shuffle"])]
     for k, (ctl, g) in enumerate(sub.groupby(["dataset", "control"])):
         x = k + np.linspace(-0.3, 0.3, len(g))
-        ax[1].scatter(x, g.value_pct, s=12, color=[COL["unet_bg-ens"] if r.startswith("unet") else COL["convlstm_bg-ens"] for r in g.run])
+        for m in ENS:
+            sel = g.run.str.startswith(m.split("_")[0]).values
+            ax[1].scatter(x[sel], g.value_pct[sel], s=14, color=COL[m], marker=MK[m])
     ax[1].set_xticks(range(4))
     ax[1].set_xticklabels([f"{DS[d]}\n{c}" for d, c in sub.groupby(["dataset", "control"]).groups], fontsize=7)
     ax[1].axhline(0, color="0.3", lw=0.8)
     ax[1].set_ylabel("skill over its own B1 (%)")
     from matplotlib.lines import Line2D
-    ax[1].legend(handles=[Line2D([], [], color=COL[m], marker="o", ls="none", label=f"{ENS[m]} seeds") for m in ENS],
+    ax[1].legend(handles=[Line2D([], [], color=COL[m], marker=MK[m], ls="none", label=f"{ENS[m]} seeds") for m in ENS],
                  fontsize=6.5, loc="center right")
     save(fig, "F3_controls")
     plt.close(fig)
@@ -306,17 +316,17 @@ def figures(T, rep, example_device):
     t6 = T["T6_diagnostics_validation"]
     if len(t6):
         fig, ax = plt.subplots(1, 2, figsize=(7.2, 3.0), sharey=True)
-        series = [("unet_bg-ens", "fixed_removal", "U-Net full", "#3a6aa6", "-"),
-                  ("unet_bg-ens-minusM", "fixed_removal", "U-Net minus fixed map", "#3a6aa6", "--"),
-                  ("unet_bg-ens-transplant-avglp", "shuffle_denoise", "large-scale correction from another time", "0.45", ":"),
-                  ("B1-avg-bgS-bilateral1", "shuffle_denoise", "best edge-preserving denoiser", "0.65", "-."),
-                  ("classical", "classical", "tuned classical forecaster", "#2f7d4f", "-"),
-                  ("unet_bg-ens", "models_vs_tuned_classical", "U-Net over the tuned classical", "#7b3fa0", "-")]
+        series = [("unet_bg-ens", "fixed_removal", "U-Net full", "#3a6aa6", "-", "o"),
+                  ("unet_bg-ens-minusM", "fixed_removal", "U-Net minus fixed map", "#3a6aa6", "--", "v"),
+                  ("unet_bg-ens-transplant-avglp", "shuffle_denoise", "large-scale correction from another time", "0.45", ":", "x"),
+                  ("B1-avg-bgS-bilateral1", "shuffle_denoise", "best edge-preserving denoiser", "0.65", "-.", "+"),
+                  ("classical", "classical", "tuned classical forecaster", "#2f7d4f", "-", "s"),
+                  ("unet_bg-ens", "models_vs_tuned_classical", "U-Net over the tuned classical", "#7b3fa0", "-", "^")]
         for k, ds in enumerate(DS):
-            for m, test, lab_, c, ls in series:
+            for m, test, lab_, c, ls, mk in series:
                 d = t6[(t6.dataset == ds) & (t6.region == "disk") & (t6.method == m) & (t6.test == test)].sort_values("horizon_frames")
                 if len(d):
-                    ax[k].plot(d.horizon_frames, d.skill_vs_strongest_pct, color=c, ls=ls, marker=".", label=lab_)
+                    ax[k].plot(d.horizon_frames, d.skill_vs_strongest_pct, color=c, ls=ls, marker=mk, ms=4, label=lab_)
             ax[k].axhline(0, color="0.3", lw=0.8)
             ax[k].set_xscale("log")
             ax[k].set_xticks([20, 40, 80, 160])
@@ -334,9 +344,9 @@ def figures(T, rep, example_device):
         fig, ax = plt.subplots(figsize=(4.6, 2.9))
         for m, name in ENS.items():
             d = t8[(t8.model == name) & (t8.kind == "roll")].sort_values("lead_h")
-            ax.plot(d.lead_h, d.median_skill_pct, color=COL[m], marker="o", ms=3, label=f"{name} chain vs persistence")
+            ax.plot(d.lead_h, d.median_skill_pct, color=COL[m], marker=MK[m], ms=3, label=f"{name} chain vs persistence")
             dd = t8[(t8.model == name) & (t8.kind == "short")]
-            ax.scatter(dd.lead_h, dd.median_skill_pct, color=COL[m], marker="*", s=40, zorder=3)
+            ax.scatter(dd.lead_h, dd.median_skill_pct, color=COL[m], marker="*" if m.startswith("unet") else "P", s=40, zorder=3)
         if "T8b_blind_roll_vs_blurred" in T:
             b = T["T8b_blind_roll_vs_blurred"]
             ax.plot(b.lead_h, b["ConvLSTM_vs_best_smoothed_%"], color=COL["convlstm_bg-ens"], ls="--", lw=1, label="ConvLSTM chain vs best-blurred persistence")
@@ -354,7 +364,8 @@ def figures(T, rep, example_device):
             if (d / "log.parquet").exists() and json.loads((d / "run.json").read_text()).get("input_mask") == "context":
                 lg = pd.read_parquet(d / "log.parquet").dropna(subset=["holdout_l1"])
                 m = "unet_bg-ens" if d.name.startswith("unet") else "convlstm_bg-ens"
-                ax[k].plot(lg.epoch, 100 * lg.holdout_skill_vs_B1, color=COL[m], lw=0.9, alpha=0.8)
+                ax[k].plot(lg.epoch, 100 * lg.holdout_skill_vs_B1, color=COL[m], lw=0.9, alpha=0.8,
+                           ls="-" if m.startswith("unet") else "--")
         ax[k].set_title(f"{DS[ds]}: hold-out skill over B1 during training", fontsize=8)
         ax[k].set_xlabel("epoch (a quarter of the training set each)")
     ax[0].set_ylabel("skill over B1 (%)")
@@ -365,20 +376,21 @@ def figures(T, rep, example_device):
     t10 = T["T10_leak_v1_v2"]
     if len(t10):
         fig, ax = plt.subplots(1, 2, figsize=(7.2, 2.8), sharey=True)
-        style = {"v1 target-aware mask": ("--", "s", 0.55), "v1 input-only mask": (":", "x", 0.55), "v2": ("-", "o", 1.0)}
+        style = {"v1 target-aware mask": ("--", 0.55), "v1 input-only mask": (":", 0.55), "v2": ("-", 1.0)}
         for k, split in enumerate(("val", "new period")):
             for m, name in ENS.items():
-                for version, (ls, mk, al) in style.items():
+                for version, (ls, al) in style.items():
                     d = t10[(t10.dataset == "final_offset") & (t10.split == split) & (t10.models == version)
                             & (t10.model == name)].sort_values("minutes")
                     if len(d):
-                        ax[k].plot(d.minutes, d.skill_pct, color=COL[m], ls=ls, marker=mk, ms=3.5, alpha=al, label=f"{name}, {version}")
+                        ax[k].plot(d.minutes, d.skill_pct, color=COL[m], ls=ls, marker=MK[m], ms=3.5, alpha=al,
+                                   mfc="white" if version != "v2" else COL[m], label=f"{name}, {version}")
             ax[k].axhline(0, color="0.3", lw=0.8)
             ax[k].set_xscale("log")
             ax[k].set_xticks([30, 60, 120, 240])
             ax[k].set_xticklabels(["30 min", "1 h", "2 h", "4 h"])
             ax[k].minorticks_off()
-            ax[k].set_title("offset, validation" if split == "val" else "offset, 28 Sep - 6 Oct", fontsize=8)
+            ax[k].set_title("offset, validation" if split == "val" else "offset, independent period", fontsize=8)
         ax[0].set_ylabel("skill over the strongest\nphysical baseline (%)")
         h_, l_ = ax[0].get_legend_handles_labels()
         fig.legend(h_, l_, fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.02), ncol=3)
@@ -422,8 +434,8 @@ def example(device, plt):
         a.imshow(img[::-1], **kw)
         a.set_title(t, fontsize=7)
         a.axis("off")
-    fig.suptitle(f"final_offset validation window {i} ({pd.Timestamp(bank.index.t_target.iloc[i]):%d %b %H:%M} UT), "
-                 f"disk skill {100 * float(s.median()):.1f} % (the median window)", fontsize=7.5, y=1.04)
+    fig.suptitle(f"Offset pointing, validation, target {pd.Timestamp(bank.index.t_target.iloc[i]):%d %b %H:%M} UT: "
+                 f"the window with the median disk skill ({100 * float(s.median()):.1f} %)", fontsize=7.5, y=1.04)
     save(fig, "F7_example_offset_4h")
     plt.close(fig)
 

@@ -35,9 +35,9 @@ for ds in (OFF, CEN):
               (f"shuffle_denoise_{tag}", ds, ["scripts/posthoc_shuffle_denoise.py", "--dataset", ds]),
               (f"classical_{tag}", ds, ["scripts/posthoc_classical.py", "--dataset", ds]),
               (f"state_estimate_{tag}", ds, ["scripts/posthoc_state_estimate.py", "--dataset", ds]),
-              (f"flow_{tag}", ds, ["scripts/posthoc_flow_baseline.py", "--dataset", ds, "--device", "cuda"])]
-STEPS += [("cross_off_on_cen", None, ["scripts/posthoc_cross_mode.py", "--train", OFF, "--on", CEN, "--device", "cuda"]),
-          ("cross_cen_on_off", None, ["scripts/posthoc_cross_mode.py", "--train", CEN, "--on", OFF, "--device", "cuda"]),
+              (f"flow_{tag}", ds, ["scripts/posthoc_flow_baseline.py", "--dataset", ds, "--device", "cuda", "--threads", "2"])]
+STEPS += [("cross_off_on_cen", None, ["scripts/posthoc_cross_mode.py", "--train", OFF, "--on", CEN, "--device", "cuda", "--threads", "2"]),
+          ("cross_cen_on_off", None, ["scripts/posthoc_cross_mode.py", "--train", CEN, "--on", OFF, "--device", "cuda", "--threads", "2"]),
           ("report", None, ["scripts/posthoc_report.py", "--datasets", f"{OFF},{CEN}"]),
           ("paper_results", None, ["scripts/paper/make_suit_paper.py", "--example-device", "cuda"]),
           ("paper_tex", None, ["scripts/paper/make_tex.py"]),
@@ -50,6 +50,21 @@ def say(msg):
     print(line, flush=True)
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+CPU_THREADS, CPU_MASK = 2, 0b0101  # logical CPUs 0 and 2 (two physical cores)
+THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+
+
+def limit_cpu(proc):
+    """Pin a step to two cores: full CPU plus GPU load shut the laptop down twice (2026-10-10)."""
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        k32.SetProcessAffinityMask(ctypes.c_void_p(int(proc._handle)), CPU_MASK)
+    except Exception:
+        pass
 
 
 def chain_running():
@@ -91,14 +106,16 @@ def main():
                 atomic.write_json(STATE, st)
             say(f"--- {name}: {' '.join(args)}")
             t0 = time.time()
-            env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8", **{k: str(CPU_THREADS) for k in THREAD_VARS}}
             env.pop("SUITDYN_RUNS_DIR", None)
             if ds:
                 env["SUITDYN_DATASET"] = ds
             with open(rv.LOG / f"after_v2_{name}.log", "a", encoding="utf-8") as f:
                 f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(args)}\n")
                 f.flush()
-                rc = subprocess.run([sys.executable, "-u", *args], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+                proc = subprocess.Popen([sys.executable, "-u", *args], cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT)
+                limit_cpu(proc)
+                rc = proc.wait()
             st[name] = {"status": "done" if rc == 0 else "failed", "exit": rc, "minutes": round((time.time() - t0) / 60, 1),
                         "at": time.strftime("%Y-%m-%d %H:%M:%S")}
             atomic.write_json(STATE, st)

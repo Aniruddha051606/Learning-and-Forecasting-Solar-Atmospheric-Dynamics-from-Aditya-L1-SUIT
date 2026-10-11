@@ -75,8 +75,9 @@ def main():
         for split in ("train", "val", "test"):
             d = t1[(t1.dataset == ds) & (t1.split == split)]
             put(f"win{L}{split.capitalize()}", int(d.windows.sum()))
-            put(f"start{L}{split.capitalize()}", str(d.start_utc.iloc[0])[:16])
-            put(f"end{L}{split.capitalize()}", str(d.end_utc.iloc[0])[:16])
+            for k, v in (("start", d.start_utc.iloc[0]), ("stop", d.end_utc.iloc[0])):
+                t = pd.Timestamp(v)  # journal style in text: 10 September 2026, 05:59
+                put(f"{k}{L}{split.capitalize()}", f"{t.day} {t:%B %Y}, {t:%H:%M}")
         seq = pd.read_parquet(ROOT / "outputs" / "datasets" / ds / "sequences" / "frames.parquet")
         put(f"frames{L}", len(seq))
         reg = pd.read_parquet(ROOT / "outputs" / "datasets" / ds / "phase1" / "registration.parquet")
@@ -104,6 +105,8 @@ def main():
     put("seedMin", seeds.skill_pct.min())
     put("seedMax", seeds.skill_pct.max())
     put("seedLoMin", seeds.ci_lo_pct.min())
+    put("nSeedPos", int((seeds.skill_pct > 0).sum()))
+    put("nSeedCases", len(seeds))
     for ds, L in DSL.items():
         p = t4[(t4.dataset == ds) & (t4.region == "plage")]
         put(f"plage{L}Min", p.skill_pct.min())
@@ -345,28 +348,28 @@ def main():
             cells = [f"{signed(r.skill_pct)} [{r.ci_lo_pct:.1f}, {r.ci_hi_pct:.1f}]".replace("-", "$-$") for r in d.itertuples()]
             rows.append(f"{title} & {model} & " + " & ".join(cells) + r" \\")
     mins = [f"{t2[(t2.dataset == 'final_offset') & (t2.horizon_frames == h)].minutes.median():.0f}" for h in (20, 40, 80, 160)]
-    tex = [r"\begin{tabular}{llcccc}", r"\hline",
+    tex = [r"{\small\setlength{\tabcolsep}{2.5pt}", r"\begin{tabular}{llcccc}", r"\hline",
            r"Pointing & Model & \multicolumn{4}{c}{Skill (\%) at a lead time of} \\",
-           " & & " + " & ".join(f"{m} min" for m in mins) + r" \\", r"\hline"] + rows + [r"\hline", r"\end{tabular}"]
+           " & & " + " & ".join(f"{m} min" for m in mins) + r" \\", r"\hline"] + rows + [r"\hline", r"\end{tabular}", "}"]
     (MS / "tables" / "tab_sealed_test.tex").write_text("\n".join(tex) + "\n", encoding="utf-8")
 
     # Table: the leak (offset pointing; Addenda H and I)
     if len(t10):
-        rows, prev = [], None
-        for split, sname in (("val", "Validation"), ("new period", "28 Sep--6 Oct"), ("test", "Sealed test")):
-            for ver, vname in (("v1 target-aware mask", "v1, target-aware mask"), ("v1 input-only mask", "v1, input-only mask"),
-                               ("v2", "v2 (retrained)")):
+        rows = []
+        for split, sname in (("val", "Validation"), ("new period", "Independent period"), ("test", "Sealed test")):
+            rows.append(r"\multicolumn{6}{l}{\emph{" + sname + r"}} \\")  # a heading row instead of a column (width)
+            for ver, vname in (("v1 target-aware mask", "v1 target-aware"), ("v1 input-only mask", "v1 input-only"),
+                               ("v2", "v2")):
                 for model in ("U-Net", "ConvLSTM"):
                     d = t10[(t10.dataset == "final_offset") & (t10.split == split) & (t10.models == ver)
                             & (t10.model == model)].sort_values("horizon_frames")
                     if not len(d):
                         continue
-                    cells = [f"{signed(r.skill_pct)} [{r.ci_lo_pct:.1f}, {r.ci_hi_pct:.1f}]".replace("-", "$-$") for r in d.itertuples()]
-                    rows.append(f"{sname if split != prev else ''} & {vname} & {model} & " + " & ".join(cells) + r" \\")
-                    prev = split
-        tex = [r"\begin{tabular}{lllcccc}", r"\hline",
-               r"Data & Models & Model & \multicolumn{4}{c}{Skill (\%) at a lead time of} \\",
-               r" & & & 29 min & 58 min & 1.9 h & 3.8 h \\", r"\hline"] + rows + [r"\hline", r"\end{tabular}"]
+                    cells = [f"{signed(r.skill_pct)} [{r.ci_lo_pct:.1f},{r.ci_hi_pct:.1f}]".replace("-", "$-$") for r in d.itertuples()]
+                    rows.append(f"{vname} & {model} & " + " & ".join(cells) + r" \\")
+        tex = [r"{\footnotesize\setlength{\tabcolsep}{2pt}", r"\begin{tabular}{llcccc}", r"\hline",
+               r"Networks & Model & \multicolumn{4}{c}{Skill (\%) at a lead time of} \\",
+               r" & & 29 min & 58 min & 1.9 h & 3.8 h \\", r"\hline"] + rows + [r"\hline", r"\end{tabular}", "}"]
         (MS / "tables" / "tab_leak.tex").write_text("\n".join(tex) + "\n", encoding="utf-8")
     # Table: the independent later period (v2)
     if len(t11):
@@ -377,9 +380,9 @@ def main():
                        f"[{r.day_ci_lo_pct:.1f}, {r.day_ci_hi_pct:.1f}]").replace("-", "$-$")
                 g2 = "yes" if r.G2 is True or str(r.G2) == "True" else "no"
                 rows.append(f"{model} & {r.minutes:.0f} min & {num} & {g2} & {int(r.windows)}" + r" \\")
-        tex = [r"\begin{tabular}{llrcccccr}", r"\hline",
-               r"Model & Lead & Skill (\%) & 95\% interval & G1 & Day-block interval & G2 & Windows \\", r"\hline"] + rows + \
-              [r"\hline", r"\end{tabular}"]
+        tex = [r"{\small\setlength{\tabcolsep}{4pt}", r"\begin{tabular}{llrcccccr}", r"\hline",
+               r"Model & Lead & Skill (\%) & 95\% interval & G1 & Day interval & G2 & Windows \\", r"\hline"] + rows + \
+              [r"\hline", r"\end{tabular}", "}"]
         (MS / "tables" / "tab_new_period.tex").write_text("\n".join(tex) + "\n", encoding="utf-8")
 
     # Table: data sets and splits
@@ -390,6 +393,10 @@ def main():
             a, b = pd.Timestamp(d.start_utc.iloc[0]), pd.Timestamp(d.end_utc.iloc[0])
             rows.append(f"{title} & {name} & {a:%Y %b.} {a.day} {a:%H:%M} & {b:%Y %b.} {b.day} {b:%H:%M} & "
                         + f"{int(d.windows.sum()):,}".replace(",", r"\,") + r" \\")
+    if len(t11):  # the independent period (offset pointing): windows over the four lead times of one model
+        nw = int(t11[t11.model == t11.model.iloc[0]].windows.sum())
+        rows.append(r"Offset & Independent period & 2026 Sep. 28 00:00 & 2026 Oct. 6 23:59 & "
+                    + f"{nw:,}".replace(",", r"\,") + r" \\")
     tex = [r"\begin{tabular}{lllll}", r"\hline", r"Pointing & Split & Start (UT) & End (UT) & Windows \\", r"\hline"] + rows + \
           [r"\hline", r"\end{tabular}"]
     (MS / "tables" / "tab_data.tex").write_text("\n".join(tex) + "\n", encoding="utf-8")

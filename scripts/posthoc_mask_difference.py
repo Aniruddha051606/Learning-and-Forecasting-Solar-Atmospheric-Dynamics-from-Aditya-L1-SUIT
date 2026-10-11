@@ -23,18 +23,20 @@ def main():
     sys.path.insert(0, str(ROOT))
     import numpy as np
     from suitdyn import atomic, config, paths
-    from suitdyn.ml import data
+    from suitdyn.ml import data, thermal
 
     P3 = config.load_phase3()
     bank = data.Bank(paths.phase3("cache"), a.device)
     data.load_background(bank, paths.phase3("background", f"static_bg_{bank.G}.npz"))
     inner = bank.mu > float(np.sqrt(1 - P3["eval"]["disk_rho_max"] ** 2))
+    th = thermal.controller(P3["thermal"], a.device)
     res = {}
     for split in ("train", "holdout", "val"):
         ids = bank.ids(split)
         ids = ids[np.linspace(0, len(ids) - 1, min(a.windows, len(ids))).astype(int)]
         disk_ctx = disk_off = frame_ctx = frame_off = hit = 0
         for n0 in range(0, len(ids), 8):
+            th.check()
             b = bank.batch(ids[n0:n0 + 8], P3["train"]["inputs"])
             ctx = data.input_mask(b["x"])[:, 0]
             off = ctx & ~b["valid"][:, 0]

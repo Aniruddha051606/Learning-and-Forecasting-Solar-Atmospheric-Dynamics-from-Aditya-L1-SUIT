@@ -2,6 +2,7 @@
 machine (tools/buzzer/suitdyn_buzzer.py) when to sound.
 
     python tools/buzzer/buzz_watch.py --dataset final_offset,final_centred --detach
+    python tools/buzzer/buzz_watch.py --v2 --detach          (the v2 retraining and after_v2.py)
     python tools/buzzer/buzz_watch.py --test                 (one test beep, to check the connection)
     python tools/buzzer/buzz_watch.py --rate-only --detach   (only the speed ticker, no run watching)
 """
@@ -230,6 +231,81 @@ class Watch:
         return None
 
 
+class WatchV2:
+    """Follows the v2 retraining: scripts/retrain_v2.py (chain.log), then scripts/after_v2.py (after_v2.log)."""
+
+    LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (.*)$")
+    END = re.compile(r"^(\w+)(?:: (\w+))? (done|FAILED)\b")
+
+    def __init__(self, logdir, alive, sender, stage_chirp=False):
+        self.logs = {k: Path(logdir) / f"{k}.log" for k in ("chain", "after_v2")}
+        self.alive, self.send, self.stage_chirp = alive, sender, stage_chirp
+        self.current, self.over, self.finished, self.pos = "starting", None, False, {}
+        for k, p in self.logs.items():  # what happened before the watcher started is known, not announced
+            lines, self.pos[k] = read_lines(p, 0)
+            for ln in lines:
+                self._parse(k, ln, announce=False)
+
+    def _parse(self, log, ln, announce=True):
+        m = self.LINE.match(ln)
+        if not m:
+            return
+        msg = m.group(1)
+        if msg.startswith("--- "):
+            self.current = msg[4:].split(" scripts/")[0].rstrip(":")
+            return
+        if log == "after_v2" and msg.startswith("finished:"):
+            self.finished = True
+            if announce:
+                self.over = ("done", "retraining, analyses and paper numbers finished")
+            return
+        if log == "chain" and msg.startswith("chain finished:") and announce:
+            self.send.event("/event", {"kind": "dataset_done", "text": "v2 training chain finished"})
+            return
+        e = self.END.match(msg)
+        if not e or not announce:
+            return
+        step = f"{e.group(1)}: {e.group(2)}" if e.group(2) else e.group(1)
+        if e.group(3) == "FAILED":  # alarm, but keep watching: the chain and after_v2 go on with the next step
+            self.send.event("/event", {"kind": "fail", "text": f"{step} failed ({log}.log)"})
+        elif step == "final_centred: train":
+            self.send.event("/event", {"kind": "dataset_done", "text": "all 12 models trained"})
+        elif self.stage_chirp:
+            self.send.event("/event", {"kind": "stage", "text": f"{step} done"})
+
+    def step(self):
+        """One cycle."""
+        alive = self.alive(None)
+        for k, p in self.logs.items():
+            lines, self.pos[k] = read_lines(p, self.pos[k])
+            for ln in lines:
+                self._parse(k, ln)
+        if self.over is None and self.finished:
+            self.over = ("done", "already finished")
+        if self.over is None and not alive:
+            self.over = ("fail", f"the run stopped before finishing (last: {self.current}): double-click Resume")
+        if self.over:
+            kind, text = self.over
+            self.send.event("/event", {"kind": kind, "text": text})
+            self.send.event("/disarm", {})
+            return self.over
+        self.send.heartbeat(self.current)
+        self.send.flush()
+        return None
+
+
+def v2_alive(_=None):
+    """The v2 chain or the after-v2 job is running (pids from their lock files)."""
+    from suitdyn.pipeline import pid_alive as alive
+    for lock in ("chain.lock", "after_v2.lock"):
+        try:
+            if alive(int(json.loads((paths.OUT / "logs" / "retrain_v2" / lock).read_text())["pid"])):
+                return True
+        except (OSError, ValueError, KeyError):
+            pass
+    return False
+
+
 def runner_pid(datasets, wait_s):
     """pid of the runner working on these data sets (from a runner.lock), waiting up to wait_s for one."""
     t0 = time.time()
@@ -282,6 +358,7 @@ def main(argv=None):
     ap.add_argument("--log", help="runner log (default: the first data set's logs/runner.log)")
     ap.add_argument("--pid", type=int, help="runner pid (default: from runner.lock)")
     ap.add_argument("--test", action="store_true", help="send one test beep and exit")
+    ap.add_argument("--v2", action="store_true", help="follow the v2 retraining (retrain_v2.py, then after_v2.py)")
     ap.add_argument("--detach", action="store_true")
     a = ap.parse_args(argv)
     send = Sender(a.host, a.port, a.retry_h * 3600)
@@ -309,15 +386,20 @@ def main(argv=None):
             if mbps is not None:
                 send.rate(mbps)
             time.sleep(a.rate_every)
-    datasets = [d.strip() for d in a.dataset.split(",") if d.strip()]
-    log = Path(a.log) if a.log else paths.pipeline("logs", "runner.log", name=datasets[0], make=False)
-    pid = a.pid or runner_pid(datasets, wait_s=1800)
-    if pid is None:
-        send.event("/event", {"kind": "fail", "text": f"no runner found for {a.dataset}"})
-        sys.exit(f"no runner.lock for {a.dataset} within 30 min")
-    say(f"watching runner pid {pid}, log {log}, data sets {datasets}; buzzer {send.base}")
-    w = Watch(log, datasets, pid, pid_alive, send, a.stage_chirp)
-    say(f"already finished: {sorted(w.finished) or 'none'}; now: {w.current}")
+    if a.v2:
+        pid, alive = None, v2_alive
+        w = WatchV2(paths.OUT / "logs" / "retrain_v2", v2_alive, send, a.stage_chirp)
+        say(f"watching the v2 retraining (chain.log, after_v2.log); buzzer {send.base}; now: {w.current}")
+    else:
+        datasets = [d.strip() for d in a.dataset.split(",") if d.strip()]
+        log = Path(a.log) if a.log else paths.pipeline("logs", "runner.log", name=datasets[0], make=False)
+        pid, alive = a.pid or runner_pid(datasets, wait_s=1800), pid_alive
+        if pid is None:
+            send.event("/event", {"kind": "fail", "text": f"no runner found for {a.dataset}"})
+            sys.exit(f"no runner.lock for {a.dataset} within 30 min")
+        say(f"watching runner pid {pid}, log {log}, data sets {datasets}; buzzer {send.base}")
+        w = Watch(log, datasets, pid, pid_alive, send, a.stage_chirp)
+        say(f"already finished: {sorted(w.finished) or 'none'}; now: {w.current}")
     next_step = 0.0
     while True:
         if meter is not None:
@@ -330,7 +412,7 @@ def main(argv=None):
                 say(f"run over: {over}")
                 break
             next_step = time.time() + a.every
-        if not a.no_pulse and pid_alive(pid):
+        if not a.no_pulse and alive(pid):
             send.pulse()
         time.sleep(a.rate_every if (meter is not None or not a.no_pulse) else a.every)
     t0 = time.time()
